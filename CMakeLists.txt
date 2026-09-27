@@ -1,40 +1,39 @@
 cmake_minimum_required(VERSION 3.20)
 project(burnout3_recomp C)
 
-# Burnout 3: Takedown - Static Recompilation
-# Builds all compatibility layers and the recompiled game executable
+# Burnout 3: Takedown (Xbox, 2004) - Static Recompilation
+#
+# Built on the shared xboxrecomp runtime, the same way hl2 is. The in-tree
+# src/{kernel,d3d,audio,input,apu,nv2a,platform} fork is no longer built: it
+# carried hand-written menus and render paths, and the goal now is the title's
+# own boot sequence on the toolkit every other Xbox recomp uses.
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
-# Common definitions
-add_compile_definitions(
-    WIN32_LEAN_AND_MEAN
-    NOMINMAX
-)
+# Half the cores for /MP: each cl.exe holds a whole generated chunk at /O2,
+# and saturating cores and RAM is what makes the desktop unusable.
+cmake_host_system_information(RESULT _bo3_cores QUERY NUMBER_OF_LOGICAL_CORES)
+math(EXPR _bo3_default_jobs "${_bo3_cores} / 2")
+if(_bo3_default_jobs LESS 1)
+    set(_bo3_default_jobs 1)
+endif()
+set(BO3_COMPILE_JOBS "${_bo3_default_jobs}" CACHE STRING
+    "Parallel cl.exe processes for the recompiled sources (/MP<n>)")
 
-# ── Compatibility layers (static libraries) ──────────────────
+add_compile_definitions(WIN32_LEAN_AND_MEAN NOMINMAX)
 
-# Platform layer: Win32/NT type vocabulary + POSIX host primitives
-add_subdirectory(src/platform)
+option(BO3_ICALL_FEEDBACK "Record indirect-branch targets for codegen feedback" OFF)
+if(BO3_ICALL_FEEDBACK)
+    add_compile_definitions(RECOMP_ICALL_FEEDBACK)
+endif()
 
-# Xbox kernel replacement (147 imports → Win32)
-add_subdirectory(src/kernel)
+option(BO3_ABI_CHECK "Report functions that clobber callee-saved registers" OFF)
+if(BO3_ABI_CHECK)
+    add_compile_definitions(RECOMP_ABI_CHECK)
+endif()
 
-# D3D8 → D3D11 graphics abstraction
-add_subdirectory(src/d3d)
+set(XBOXRECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../xboxrecomp" CACHE PATH "Path to xboxrecomp toolkit")
+add_subdirectory(${XBOXRECOMP_DIR} ${CMAKE_BINARY_DIR}/xboxrecomp)
 
-# DirectSound → XAudio2 audio abstraction
-add_subdirectory(src/audio)
-
-# Xbox input → XInput controller abstraction
-add_subdirectory(src/input)
-
-# NV2A GPU emulation (extracted from xemu)
-# Note: nv2a is compiled as part of src/game, no separate CMakeLists
-
-# MCPX APU audio emulation (extracted from xemu)
-add_subdirectory(src/apu)
-
-# ── Recompiled game executable ─────────────────────────────────
 add_subdirectory(src/game)

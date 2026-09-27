@@ -63,6 +63,8 @@ tools/recomp/output/
 
 # Generated recompiled source (regenerate with: py -3 -m tools.recomp ... --split 1000)
 src/game/recomp/gen/
+src/game/recomp/gen.*/
+build-xr/
 
 # Claude Code auto memory
 .claude/
@@ -76,3 +78,4 @@ Desktop.ini
 *.tmp
 *.bak
 *.log
+saves/
