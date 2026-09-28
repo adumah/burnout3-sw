@@ -176,6 +176,46 @@ static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
         }
     }
 
+    /* BO3_TRAP_NAN: an unmasked SSE invalid-operation -- the first op that
+     * made a NaN. Log the site once, re-mask for this thread, and let the op
+     * run again to produce its NaN as before. */
+    if (er->ExceptionCode == STATUS_FLOAT_INVALID_OPERATION
+     || er->ExceptionCode == STATUS_FLOAT_MULTIPLE_TRAPS) {
+        static void *seen[40];
+        static int nseen;
+        int i, dup = 0;
+        for (i = 0; i < nseen; i++)
+            dup |= seen[i] == er->ExceptionAddress;
+        if (!dup && nseen < 40) {
+            STACKFRAME64 sf;
+            CONTEXT walk = *ep->ContextRecord;
+            int f;
+            seen[nseen++] = er->ExceptionAddress;
+            fprintf(stderr, "\n[NAN] invalid op #%d, thread %lu, at ", nseen,
+                    GetCurrentThreadId());
+            print_host_symbol(er->ExceptionAddress);
+            memset(&sf, 0, sizeof sf);
+            sf.AddrPC.Offset = walk.Rip;    sf.AddrPC.Mode = AddrModeFlat;
+            sf.AddrFrame.Offset = walk.Rbp; sf.AddrFrame.Mode = AddrModeFlat;
+            sf.AddrStack.Offset = walk.Rsp; sf.AddrStack.Mode = AddrModeFlat;
+            for (f = 0; f < 8 && StackWalk64(IMAGE_FILE_MACHINE_AMD64,
+                     GetCurrentProcess(), GetCurrentThread(), &sf, &walk, NULL,
+                     SymFunctionTableAccess64, SymGetModuleBase64, NULL)
+                     && sf.AddrPC.Offset; f++) {
+                if (f) {
+                    fprintf(stderr, "      <- ");
+                    print_host_symbol((void *)(uintptr_t)sf.AddrPC.Offset);
+                }
+            }
+            fprintf(stderr, "  guest regs: eax=%08X ecx=%08X esi=%08X edi=%08X"
+                            " esp=%08X\n", g_eax, g_ecx, g_esi, g_edi, g_esp);
+            fflush(stderr);
+        }
+        ep->ContextRecord->MxCsr |= 0x80;           /* IM back on */
+        ep->ContextRecord->MxCsr &= ~0x3Fu;          /* clear the flags */
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+
     /* Report anything fatal, not only access violations: a stack overflow or
      * illegal instruction otherwise ends the process looking like a clean
      * exit. Capped so a systematic fault does not bury the first ones. */
@@ -302,6 +342,50 @@ static DWORD WINAPI hang_watchdog(LPVOID arg)
     return 0;
 }
 
+/* BO3_TRAP_NAN=<flag file>: once that file exists, unmask the SSE invalid
+ * exception on every thread so veh_handler names the op that first makes a
+ * NaN. Armed by a file, not a timer, because what matters is a moment in
+ * play (the race start) that a driver script reaches at no fixed time. */
+static DWORD WINAPI nan_trap_arm(LPVOID arg)
+{
+    const char *flag = (const char *)arg;
+    HANDLE snap;
+    THREADENTRY32 te;
+    DWORD pid = GetCurrentProcessId(), me = GetCurrentThreadId();
+
+    while (GetFileAttributesA(flag) == INVALID_FILE_ATTRIBUTES)
+        Sleep(500);
+    snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    te.dwSize = sizeof te;
+    if (snap != INVALID_HANDLE_VALUE && Thread32First(snap, &te)) {
+        do {
+            HANDLE th;
+            CONTEXT ctx;
+            if (te.th32OwnerProcessID != pid || te.th32ThreadID == me)
+                continue;
+            th = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT |
+                            THREAD_SUSPEND_RESUME, FALSE, te.th32ThreadID);
+            if (!th)
+                continue;
+            if (SuspendThread(th) != (DWORD)-1) {
+                memset(&ctx, 0, sizeof ctx);
+                ctx.ContextFlags = CONTEXT_FLOATING_POINT;
+                if (GetThreadContext(th, &ctx)) {
+                    ctx.MxCsr &= ~0x80u;
+                    ctx.MxCsr &= ~0x3Fu;
+                    SetThreadContext(th, &ctx);
+                }
+                ResumeThread(th);
+            }
+            CloseHandle(th);
+        } while (Thread32Next(snap, &te));
+    }
+    if (snap != INVALID_HANDLE_VALUE)
+        CloseHandle(snap);
+    fprintf(stderr, "[NAN] trap armed\n");
+    return 0;
+}
+
 static void hang_watchdog_start(void)
 {
     const char *spec = getenv("RECOMP_HANG_WATCHDOG");
@@ -310,6 +394,9 @@ static void hang_watchdog_start(void)
     if (seconds)
         CloseHandle(CreateThread(NULL, 0, hang_watchdog,
                                  (LPVOID)(uintptr_t)seconds, 0, NULL));
+    if (getenv("BO3_TRAP_NAN"))
+        CloseHandle(CreateThread(NULL, 0, nan_trap_arm,
+                                 (LPVOID)getenv("BO3_TRAP_NAN"), 0, NULL));
 }
 
 int main(int argc, char **argv)

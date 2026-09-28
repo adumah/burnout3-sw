@@ -113,14 +113,32 @@ on by default in `main.c`.
 | 15 | Input dies in every sub-menu | A rumble `SET_REPORT` on the control pipe overwrote the input report's completion in the done queue | toolkit, one done queue per pass |
 | 16 | Pad polled twice a second, then a freeze at vehicle select | Host-run ISRs and DPCs did not restore IRQL; `KPCR.Irql` (fs:[0x24]) was never written, so DirectSound's DPC took a critical section; the APU frame thread starved the title of its lock and could spin on a voice producing no samples | toolkit: IRQL dispatcher epilogue, KPCR publish, APU lock yield, underrun guard |
 
+### What stood between the race load and 3D
+
+| # | Symptom | Cause | Fix |
+|---|---|---|---|
+| 17 | Race frozen at "Fight Through Traffic", GPU idle | x87 precision control: the Xbox rounds results to float (PC=24). RW's draw-list insert compared a double-precision value against its own float copy and walked back and forth forever | toolkit `fix/x87-precision-control` |
+| 18 | Every 3D batch collapsed to one point | Vertex-program interpreter sent a paired ILU result to the temp field, not R1; and `SET_VIEWPORT_SCALE`/`_OFFSET` (c[58]/c[59]) were dropped | toolkit, vertex-program series |
+| 19 | Camera matrices NaN in the race; stunt readout "-2147483648ft" | `lahf` lifted to a comment, so MSVC's `ucomiss; lahf; test ah,0x44` zero test answered at random and a guarded 0/0 ran (`sub_0016FB50`). Found with `BO3_TRAP_NAN` | toolkit `fix/lahf-unordered-compares` |
+| 20 | Full-screen passes painted over the scene | Only one blend pair was implemented | toolkit, pb_exec |
+
+With those in, the Crash Nav globe and map, the garage (3D car in the parking
+structure) and the race's cube-map reflection passes all render through the
+title's own vertex programs.
+
+Debug knobs used: `BO3_TRAP_NAN=<flag file>` (main.c) unmasks the SSE
+invalid exception once the file exists and names the op that first makes a
+NaN; `RECOMP_FRAME_TRACE=<flag file>` logs one whole frame of draws;
+`RECOMP_VSH_TRACE=<n>` samples vertex-program batches.
+
 ## Where it stands
 
-The race loads (traffic vehicles, `Intro.kfs`, `tracks\US\C3_V1\streamed.dat`)
-and then RenderWare's frame begin (`sub_001F5810` → `sub_001FC130`) spins
-inserting a node into its sorted priority list at 0x0041B850. The compare
-lifting reads correctly, so the list's next/prev links disagree: the list is
-corrupted, cause not yet found.
+The race runs: countdown, "GO", position, lap and speed update, and the world
+draws into the six cube-map faces around the car. The main view does not:
+it draws the sky and a lens flare and sees the other cars as two dots in the
+distance, so the chase camera is being placed far from the track. Next is
+finding which lifted instruction puts it there.
 
-Known rendering gaps under the software rasteriser: some header text textures
-still come out white, the vehicle preview (render to texture) is noise, and
-option values on the race options screen do not draw.
+Known rendering gaps under the software rasteriser: no near-plane clipping
+(triangles crossing the eye are dropped whole), no register combiners, one
+texture stage, and the floor reflection in the garage draws opaque.
