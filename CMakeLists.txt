@@ -37,3 +37,13 @@ set(XBOXRECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../xboxrecomp" CACHE PATH "Path 
 add_subdirectory(${XBOXRECOMP_DIR} ${CMAKE_BINARY_DIR}/xboxrecomp)
 
 add_subdirectory(src/game)
+
+# Line-level symbols for the runtime libraries, so a hang sample inside one
+# names the file and line rather than the nearest public function.
+if(MSVC)
+    foreach(_lib xbox_apu xbox_usb xbox_kernel)
+        if(TARGET ${_lib})
+            target_compile_options(${_lib} PRIVATE /Z7)
+        endif()
+    endforeach()
+endif()

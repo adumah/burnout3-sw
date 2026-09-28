@@ -63,9 +63,9 @@ another dispatch went unresolved. The fix belongs in the lifter, which now
 lifts those tables as local switches (#7). A seed the tool marks as an alias
 should be checked against the function it lands in before it is kept.
 
-## Where it stands
+## The boot sequence
 
-Boot sequence, all from the title's own code:
+All of it comes from the title's own code:
 
 ```
 ovid\englis30.xmv    EA intro
@@ -74,6 +74,53 @@ ovid\Titles30.xmv    title sequence
 tracks\_femain.rws + tracks\_FEMain.xmv   "Press START to continue", attract video behind it
 ```
 
-It idles there. Six minutes at the title screen loaded nothing further. The
-Burnout 3 logo draws as a white box because the software rasteriser does not
-decode that texture's format yet.
+## Past the title screen: the pad, the menus, a race
+
+With a controller the title walks its own frontend: the profile prompt, the
+name keyboard, "save your profile?", the main menu, Single Event, race
+options and vehicle select, then the takedown tutorial and the race load.
+
+![Profile prompt](screenshots/boot_profile_prompt.png)
+![Main menu](screenshots/menu_main.png)
+![Single Event](screenshots/menu_single_event.png)
+![Vehicle select](screenshots/menu_vehicle_select.png)
+
+### Driving it with no one at the desk
+
+```
+RECOMP_PAD_LIVE=pad.txt RECOMP_PB_EXEC=1 RECOMP_FB_DUMP=f RECOMP_PB_REPORT_MS=2000 ./bin/burnout3.exe
+echo start:1200 >> pad.txt       # pressed as soon as it is read
+echo down:300  >> pad.txt        # short: a held d-pad auto-repeats
+```
+
+`RECOMP_PAD_LIVE` presses each line appended to the file; lines read together
+fire one after another. `RECOMP_PAD_SCRIPT` takes a fixed timeline instead,
+but how long a screen takes to appear under the software rasteriser varies
+too much for timelines to hit menus reliably. Hold presses for about a second,
+because the title polls its pad only a few times a second while rasterising.
+A d-pad press held that long auto-repeats, so keep those short. `RECOMP_USB` is
+on by default in `main.c`.
+
+### What stood between "Press START" and the race
+
+| # | Symptom | Cause | Fix |
+|---|---|---|---|
+| 10 | Logo and header art are white boxes | P8 (palettised) textures were unsupported; the palette is `SET_TEXTURE_PALETTE`, 0x1B20 | toolkit `feat/pb-exec-p8` |
+| 11 | With USB on, the boot parks at `LocalCache00.bin`; one port interrupt, no enumeration | The OHCI model read the driver's descriptor addresses (physical) as low RAM rather than the contiguous window | toolkit `fix/ohci-physical-descriptors` |
+| 12 | Enumeration only worked when logging slowed the title | XPP owns physical page 0 (a private arena ending at 0x80001000); the contiguous allocator gave that page to XAPI's launch data | toolkit `fix/contig-skip-page-zero` |
+| 13 | Enumerated but never attached | The XID class driver's AddDevice (0x00364C40) and three siblings are only reachable through the class-driver table at 0x00362AF4 | seeds in `config/seed_functions.json` |
+| 14 | Frozen after the profile screens | Waiting for a sound to finish (`IDirectSoundBuffer::GetStatus`); the APU model never raised its interrupt and read voice memory as low RAM | toolkit `fix/apu-bus-and-irq` |
+| 15 | Input dies in every sub-menu | A rumble `SET_REPORT` on the control pipe overwrote the input report's completion in the done queue | toolkit, one done queue per pass |
+| 16 | Pad polled twice a second, then a freeze at vehicle select | Host-run ISRs and DPCs did not restore IRQL; `KPCR.Irql` (fs:[0x24]) was never written, so DirectSound's DPC took a critical section; the APU frame thread starved the title of its lock and could spin on a voice producing no samples | toolkit: IRQL dispatcher epilogue, KPCR publish, APU lock yield, underrun guard |
+
+## Where it stands
+
+The race loads (traffic vehicles, `Intro.kfs`, `tracks\US\C3_V1\streamed.dat`)
+and then RenderWare's frame begin (`sub_001F5810` → `sub_001FC130`) spins
+inserting a node into its sorted priority list at 0x0041B850. The compare
+lifting reads correctly, so the list's next/prev links disagree: the list is
+corrupted, cause not yet found.
+
+Known rendering gaps under the software rasteriser: some header text textures
+still come out white, the vehicle preview (render to texture) is noise, and
+option values on the race options screen do not draw.

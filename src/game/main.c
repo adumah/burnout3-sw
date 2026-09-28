@@ -127,6 +127,24 @@ static void print_guest_stack(void)
     fprintf(stderr, "\n");
 }
 
+/* BO3_PEEK=va[,va...]: dump 64 bytes of guest memory at each address, from
+ * the fault report and from each hang sample. */
+static void peek_guest_memory(void)
+{
+    const char *p = getenv("BO3_PEEK");
+    while (p && *p && g_xbox_mem_offset) {
+        char *end;
+        uint32_t va = (uint32_t)strtoul(p, &end, 16);
+        const uint32_t *m = (const uint32_t *)((uintptr_t)g_xbox_mem_offset + va);
+        int k;
+        fprintf(stderr, "  peek %08X:", va);
+        for (k = 0; k < 16; k++)
+            fprintf(stderr, "%s%08X", (k % 8) ? " " : "\n    ", m[k]);
+        fprintf(stderr, "\n");
+        p = (*end == ',') ? end + 1 : NULL;
+    }
+}
+
 /* The emulated MCPX APU answers its own registers. */
 bool apu_hook_handle_mmio(PCONTEXT ctx, uintptr_t fault_addr,
                           uint32_t fault_xbox_va, int is_write);
@@ -184,26 +202,12 @@ static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
                     "              esp=%08X seh_ebp=%08X esi=%08X edi=%08X\n",
             g_eax, g_ecx, g_edx, g_ebx, g_esp, g_seh_ebp, g_esi, g_edi);
     print_guest_stack();
-    /* BO3_PEEK=va[,va...]: dump 64 bytes of guest memory at each address. */
-    {
-        const char *p = getenv("BO3_PEEK");
-        while (p && *p && g_xbox_mem_offset) {
-            char *end;
-            uint32_t va = (uint32_t)strtoul(p, &end, 16);
-            const uint32_t *m = (const uint32_t *)((uintptr_t)g_xbox_mem_offset + va);
-            int k;
-            fprintf(stderr, "  peek %08X:", va);
-            for (k = 0; k < 16; k++)
-                fprintf(stderr, "%s%08X", (k % 8) ? " " : "\n    ", m[k]);
-            fprintf(stderr, "\n");
-            p = (*end == ',') ? end + 1 : NULL;
-        }
-    }
+    peek_guest_memory();
     fflush(stderr);
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
-/* RECOMP_HANG_WATCHDOG=<seconds>: sample every thread's host RIP four times
+/* RECOMP_HANG_WATCHDOG=<seconds>: sample every thread's host RIP every N seconds
  * and name the generated function each is in. A spin shows up as the same
  * symbol with the indirect-call count flat, which is what separates a hang
  * from something merely slow. Ported from hl2/src/game/main.c. */
@@ -235,15 +239,42 @@ static void sample_all_threads(void)
                 busy = (((ULONGLONG)k.dwHighDateTime << 32 | k.dwLowDateTime) +
                         ((ULONGLONG)u.dwHighDateTime << 32 | u.dwLowDateTime)) / 10000;
             memset(&ctx, 0, sizeof(ctx));
-            ctx.ContextFlags = CONTEXT_CONTROL;
+            ctx.ContextFlags = CONTEXT_FULL;
+            /* Resume before printing: a thread suspended while holding the
+             * CRT's stderr lock deadlocks the sampler's own fprintf, which is
+             * exactly what heavy kernel logging makes likely. The stack of a
+             * busy thread is walked while it is suspended and printed after. */
             if (SuspendThread(th) != (DWORD)-1) {
-                if (GetThreadContext(th, &ctx)) {
+                BOOL got = GetThreadContext(th, &ctx);
+                DWORD64 frames[10];
+                int nframes = 0;
+                if (got && busy > 10000) {
+                    STACKFRAME64 sf;
+                    CONTEXT walk = ctx;
+                    memset(&sf, 0, sizeof sf);
+                    sf.AddrPC.Offset = ctx.Rip;    sf.AddrPC.Mode = AddrModeFlat;
+                    sf.AddrFrame.Offset = ctx.Rbp; sf.AddrFrame.Mode = AddrModeFlat;
+                    sf.AddrStack.Offset = ctx.Rsp; sf.AddrStack.Mode = AddrModeFlat;
+                    while (nframes < 10
+                        && StackWalk64(IMAGE_FILE_MACHINE_AMD64, GetCurrentProcess(),
+                                       th, &sf, &walk, NULL,
+                                       SymFunctionTableAccess64,
+                                       SymGetModuleBase64, NULL)
+                        && sf.AddrPC.Offset)
+                        frames[nframes++] = sf.AddrPC.Offset;
+                }
+                ResumeThread(th);
+                if (got) {
+                    int f;
                     fprintf(stderr, "  tid %-6lu cpu %6llums ",
                             (unsigned long)te.th32ThreadID,
                             (unsigned long long)busy);
                     print_host_symbol((void *)(uintptr_t)ctx.Rip);
+                    for (f = 1; f < nframes; f++) {
+                        fprintf(stderr, "      <- ");
+                        print_host_symbol((void *)(uintptr_t)frames[f]);
+                    }
                 }
-                ResumeThread(th);
             }
             CloseHandle(th);
         } while (Thread32Next(snap, &te));
@@ -257,7 +288,7 @@ static DWORD WINAPI hang_watchdog(LPVOID arg)
     unsigned long long prev = 0;
     int sample;
 
-    for (sample = 1; sample <= 4; sample++) {
+    for (sample = 1; ; sample++) {
         Sleep(seconds * 1000);
         fprintf(stderr, "\n[HANG] sample %d after %us, indirect calls %llu (+%llu)\n",
                 sample, sample * seconds,
@@ -265,6 +296,7 @@ static DWORD WINAPI hang_watchdog(LPVOID arg)
                 (unsigned long long)(g_icall_count - prev));
         prev = g_icall_count;
         sample_all_threads();
+        peek_guest_memory();
         fflush(stderr);
     }
     return 0;
@@ -314,6 +346,11 @@ int main(int argc, char **argv)
         _putenv_s("RECOMP_AC97_READY", "1");
     if (!getenv("RECOMP_APU_DSP_ACK"))
         _putenv_s("RECOMP_APU_DSP_ACK", "0x825F8810");
+    /* The pad. Without the USB controller model there is no way past
+     * "Press START"; with it the host's XInput pad (or RECOMP_PAD_SCRIPT /
+     * RECOMP_PAD_LIVE) drives the title's own XPP driver. */
+    if (!getenv("RECOMP_USB"))
+        _putenv_s("RECOMP_USB", "1");
 
     if (!load_xbe(path, &xbe_data, &xbe_size))
         return 1;

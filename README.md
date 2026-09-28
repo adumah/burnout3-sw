@@ -7,13 +7,15 @@ This project takes the original Xbox binary of **Burnout 3: Takedown** (2004, Cr
 > **Status (branch `feat/xboxrecomp-boot`): alpha.** The build now runs on the
 > shared [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) runtime, the way
 > `hl2` does. It has no hand-written menus, renderers or game-state overrides.
-> From its real entry point the title plays the EA and Criterion intros and
-> reaches its own "Press START" screen with the attract video behind it. See
-> [docs/boot.md](docs/boot.md) for what it took and how to run it. Everything
-> below this note describes the earlier in-tree fork. It is kept for history
-> and is not what this branch builds.
+> From its real entry point the title plays its intros, takes a real (or
+> scripted) pad through its own profile screens, main menu, Single Event and
+> vehicle select, and loads a race, where it currently stalls in RenderWare.
+> See [docs/boot.md](docs/boot.md) for what it took and how to run it.
+> Everything below this note describes the earlier in-tree fork. It is kept
+> for history and is not what this branch builds.
 
 ![Burnout 3's own title screen, reached from the XBE entry point](docs/screenshots/boot_title_press_start.png)
+![Its own main menu, driven through its own USB pad driver](docs/screenshots/menu_main.png)
 
 ![Title intro video playing through the boot sequence](docs/screenshots/title.png)
 ![Intro video - racing footage from the original XMV videos](docs/screenshots/introvideo.png)
