@@ -121,6 +121,8 @@ on by default in `main.c`.
 | 18 | Every 3D batch collapsed to one point | Vertex-program interpreter sent a paired ILU result to the temp field, not R1; and `SET_VIEWPORT_SCALE`/`_OFFSET` (c[58]/c[59]) were dropped | toolkit, vertex-program series |
 | 19 | Camera matrices NaN in the race; stunt readout "-2147483648ft" | `lahf` lifted to a comment, so MSVC's `ucomiss; lahf; test ah,0x44` zero test answered at random and a guarded 0/0 ran (`sub_0016FB50`). Found with `BO3_TRAP_NAN` | toolkit `fix/lahf-unordered-compares` |
 | 20 | Full-screen passes painted over the scene | Only one blend pair was implemented | toolkit, pb_exec |
+| 21 | Race main view: sky only, other cars as dots; cube-map passes fine | `cmpltss` was unimplemented. RW's frustum build masks each side plane's reciprocal length with it, so all four side planes were (0,0,0,0) and every track section failed `sub_001B23F0`. Traced from the empty per-group visibility flags (`sub_001AD6B0`) back to the RwCamera planes | toolkit `fix/sse-compares` (all SSE compares, 4-lane rsqrt/rcp/sqrt, single cmps/scas) |
+
 
 With those in, the Crash Nav globe and map, the garage (3D car in the parking
 structure) and the race's cube-map reflection passes all render through the
@@ -133,12 +135,15 @@ NaN; `RECOMP_FRAME_TRACE=<flag file>` logs one whole frame of draws;
 
 ## Where it stands
 
-The race runs: countdown, "GO", position, lap and speed update, and the world
-draws into the six cube-map faces around the car. The main view does not:
-it draws the sky and a lens flare and sees the other cars as two dots in the
-distance, so the chase camera is being placed far from the track. Next is
-finding which lifted instruction puts it there.
+The race renders from the chase camera: the car, the road, storefronts and
+traffic draw into the scene target (`docs/screenshots/race_chase_cam.png`).
+What does not happen yet is the final composite. Each frame renders the
+scene to 0x023A4000, blurs down into small targets, and then draws two
+full-screen quads onto the back buffer that almost certainly combine the
+scene and the glow through a second texture stage and the register
+combiners. The executor samples stage 0 only and has no combiners, so the
+presented frame is the HUD over the glow, and the scene shows only in
+alternate dumps. The same gap is why everything is dark and the sky black.
 
-Known rendering gaps under the software rasteriser: no near-plane clipping
-(triangles crossing the eye are dropped whole), no register combiners, one
-texture stage, and the floor reflection in the garage draws opaque.
+Next: four texture stages and a software register-combiner evaluator in the
+executor.
