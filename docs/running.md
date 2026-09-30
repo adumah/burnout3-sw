@@ -85,7 +85,7 @@ For debugging:
 | `RECOMP_RASTER_THREADS=<n>` | Rasteriser worker threads (default: cores − 4; `1` turns threading off). |
 | `RECOMP_WATCHDOG_SECS=<s>` | Hang watchdog. If the title makes no progress for that long, dump the guest call stack (`tools/stackwalk.py` in the toolkit reads it). |
 | `RECOMP_USB_STATS=1` | Pad reports and control transfers per pad. |
-| `RECOMP_FRAME_TRACE=1` | One frame's NV2A methods and draws, to stderr. |
+| `RECOMP_FRAME_TRACE=<file>` | Once `<file>` exists, logs every batch of the next frame (surface, texture, blend, depth, combiners, pixels written) to stderr. Delete and recreate the file to trace another frame. `RECOMP_FRAME_TRACE_METHODS=1` adds every method. |
 | `BO3_TRAP_NAN=<file>` | Trap the first x87/SSE NaN once `<file>` exists. That is how the camera NaN (lahf) was found. |
 
 ## A scripted session, start to finish
