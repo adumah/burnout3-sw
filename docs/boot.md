@@ -137,14 +137,25 @@ NaN; `RECOMP_FRAME_TRACE=<flag file>` logs one whole frame of draws;
 
 ## Where it stands
 
-The race renders and composites the way the hardware does: lit, textured 3D
-from the chase camera, the pre-race camera swoop with its motion blur, the
-objective card over the live scene, and the HUD (`race_get_ready.png`,
-`race_sequence.png`). All of it runs through the title's own vertex programs
-and register-combiner programs in the software GPU.
+Every game mode renders and plays, driven headlessly with scripted pads:
 
-Known gaps: the sky dome shows blocky seams (nearest-texel sampling, no
-filtering or mip selection); a vertical-streak pattern over some menu
-backgrounds; bump/dot-product texture modes read zero; no near-plane
-clipping. And every headless test replays the unskippable "Rules of the
-Road" video, because the profile is not saved.
+| Mode | Players | Capture |
+|---|---|---|
+| Race | 1 | `race_single_event.png` |
+| Time Attack | 1 | `time_attack.png` |
+| Road Rage | 1 | `road_rage.png` |
+| Crash | 1 | `crash_drive_sequence.png`, `crash_pileup.png`, `crash_result.png` |
+| Race | 2 split-screen | `splitscreen_p1_drives.png`, `splitscreen_p2_drives.png` |
+| Road Rage | 2 split-screen | `splitscreen_road_rage.png` |
+| Double Impact | 2 split-screen | `double_impact.png` |
+| Team Crush | 2 split-screen | `team_crush.png` |
+| Party Crash | pass-the-pad | `party_crash.png` |
+
+Two controllers are connected by default (`RECOMP_USB_PADS=2`, set in
+main.c); pad 2 is host XInput pad 2 or `p2-` steps in a pad script.
+
+Speed under the software GPU: menus ~14 fps, races ~2-4 fps on 12 cores.
+
+Known gaps: a vertical-streak pattern over the menu backdrop movie; the
+sky dome's texture seams; bump/dot-product texture modes read zero; the
+profile is not saved, so every launch replays the tutorial videos.
