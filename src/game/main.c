@@ -15,8 +15,12 @@
  *   5. set the guest stack pointer
  *   6. jump to the recompiled entry point
  *
- * Headless by default: the runtime opens no window unless RECOMP_FB_WINDOW is
- * set. RECOMP_FB_DUMP=<prefix> writes what the NV2A executor renders to BMPs.
+ * Usage: burnout3 [--headless] [--record out.mp4] [--seconds N] [default.xbe]
+ *
+ * A window by default. --headless opens none; --record dumps every presented
+ * frame and hands the sequence to ffmpeg when the run ends (after --seconds,
+ * or on Ctrl+C). RECOMP_FB_DUMP=<prefix> writes frames to BMPs directly.
+ * See docs/running.md.
  *
  * XBE details (retail, XDK 5849):
  *   Base addr:   0x00010000
@@ -386,6 +390,72 @@ static DWORD WINAPI nan_trap_arm(LPVOID arg)
     return 0;
 }
 
+/* --record: frames are dumped as BMPs while the game runs, and encoded when
+ * it stops. ponytail: not a live pipe -- the software GPU runs at a few fps,
+ * so buffering to disk costs nothing and survives an ffmpeg that is missing
+ * or fails; pipe to ffmpeg's stdin if long recordings fill the disk. */
+static char s_rec_out[MAX_PATH];
+static char s_rec_dir[MAX_PATH];
+static volatile LONG s_rec_done;
+
+static void record_finish(void)
+{
+    char cmd[3 * MAX_PATH];
+
+    if (!s_rec_out[0] || InterlockedExchange(&s_rec_done, 1))
+        return;
+    snprintf(cmd, sizeof cmd,
+             "ffmpeg -hide_banner -loglevel error -y -framerate 30 "
+             "-i \"%s\\f%%05d.bmp\" -pix_fmt yuv420p \"%s\"",
+             s_rec_dir, s_rec_out);
+    fprintf(stderr, "[REC] encoding %s\n", s_rec_out);
+    if (system(cmd) != 0) {
+        fprintf(stderr, "[REC] ffmpeg failed; the frames are in %s\n",
+                s_rec_dir);
+        return;
+    }
+    snprintf(cmd, sizeof cmd, "rmdir /s /q \"%s\"", s_rec_dir);
+    system(cmd);
+}
+
+static BOOL WINAPI record_ctrl(DWORD type)
+{
+    (void)type;
+    record_finish();
+    ExitProcess(0);
+    return TRUE;
+}
+
+static DWORD WINAPI record_timer(LPVOID arg)
+{
+    Sleep((DWORD)(uintptr_t)arg * 1000u);
+    record_finish();
+    ExitProcess(0);
+    return 0;
+}
+
+static void record_start(const char *out, unsigned seconds)
+{
+    char tmp[MAX_PATH];
+
+    GetFullPathNameA(out, MAX_PATH, s_rec_out, NULL);
+    GetTempPathA(MAX_PATH, tmp);
+    snprintf(s_rec_dir, sizeof s_rec_dir, "%sbo3rec_%lu", tmp,
+             GetCurrentProcessId());
+    CreateDirectoryA(s_rec_dir, NULL);
+    {
+        char prefix[MAX_PATH + 4];
+        snprintf(prefix, sizeof prefix, "%s\\f", s_rec_dir);
+        _putenv_s("RECOMP_FB_DUMP", prefix);
+    }
+    _putenv_s("RECOMP_FB_DUMP_FLIPS", "1");
+    SetConsoleCtrlHandler(record_ctrl, TRUE);
+    if (seconds)
+        CloseHandle(CreateThread(NULL, 0, record_timer,
+                                 (LPVOID)(uintptr_t)seconds, 0, NULL));
+    printf("Recording to %s (frames in %s)\n", s_rec_out, s_rec_dir);
+}
+
 static void hang_watchdog_start(void)
 {
     const char *spec = getenv("RECOMP_HANG_WATCHDOG");
@@ -401,9 +471,27 @@ static void hang_watchdog_start(void)
 
 int main(int argc, char **argv)
 {
-    const char *path = argc > 1 ? argv[1] : BO3_XBE_DEFAULT;
+    const char *path = BO3_XBE_DEFAULT;
+    const char *record = NULL;
+    unsigned seconds = 0;
+    int headless = 0, i;
     void *xbe_data = NULL;
     size_t xbe_size = 0;
+
+    for (i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--headless"))
+            headless = 1;
+        else if (!strcmp(argv[i], "--record") && i + 1 < argc)
+            record = argv[++i];
+        else if (!strcmp(argv[i], "--seconds") && i + 1 < argc)
+            seconds = (unsigned)strtoul(argv[++i], NULL, 10);
+        else if (argv[i][0] == '-') {
+            fprintf(stderr, "usage: %s [--headless] [--record out.mp4] "
+                            "[--seconds N] [default.xbe]\n", argv[0]);
+            return 2;
+        } else
+            path = argv[i];
+    }
 
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
@@ -443,6 +531,17 @@ int main(int argc, char **argv)
      * XInput pad 2, or "p2-" steps in RECOMP_PAD_LIVE / RECOMP_PAD_SCRIPT. */
     if (!getenv("RECOMP_USB_PADS"))
         _putenv_s("RECOMP_USB_PADS", "2");
+    /* The software NV2A: without it nothing is drawn. RECOMP_PB_EXEC=0 turns
+     * it off (the runtime tests only for presence), which runs the boot ~50x
+     * faster when following it by file accesses. */
+    if (!getenv("RECOMP_PB_EXEC"))
+        _putenv_s("RECOMP_PB_EXEC", "1");
+    else if (!strcmp(getenv("RECOMP_PB_EXEC"), "0"))
+        _putenv_s("RECOMP_PB_EXEC", "");
+    if (!headless && !getenv("RECOMP_FB_WINDOW"))
+        _putenv_s("RECOMP_FB_WINDOW", "1");
+    if (record)
+        record_start(record, seconds);
 
     if (!load_xbe(path, &xbe_data, &xbe_size))
         return 1;

@@ -1,16 +1,18 @@
-# ============================================================
-# Burnout 3: Takedown - Static Recompilation Project
-# ============================================================
-
-# Original Xbox game assets (large binary files - do NOT commit)
+# Your game data: the unpacked disc. Never committed.
 Burnout 3 Takedown/
+*.iso
+*.xiso
 
-# Build artifacts
+# Generated from default.xbe by regen.sh. Never committed: the tool ships,
+# the output doesn't.
+src/game/recomp/gen/
+src/game/recomp/gen.*/
+
+# Build output (regen.sh's analysis lands in build/xr)
 build/
+build-xr/
 out/
 bin/
-obj/
-*.o
 *.obj
 *.exe
 *.dll
@@ -20,62 +22,33 @@ obj/
 *.ilk
 *.idb
 
-# IDE files
+# Runtime state and captures: emulated HDD, frame dumps, logs
+saves/
+runs/
+*.bmp
+*.log
+setup.log
+
+# Made by Setup.cmd
+Play Burnout 3.cmd
+
+# Local-only
+_local/
+CLAUDE.md
+.claude/
+.mcp.json
+REPO_RULES.md
+
+# Editors, Python, OS
 .vs/
 *.suo
 *.user
-*.sln.docstates
 .idea/
-*.swp
-*.swo
-*~
-
-# CMake
-CMakeFiles/
-CMakeCache.txt
-cmake_install.cmake
-Makefile
-
-# Python
 __pycache__/
 *.pyc
-*.pyo
 .venv/
-venv/
-
-# Disassembly tool generated output (regenerate with: py -3 -m tools.disasm)
-tools/disasm/output/
-
-# Function ID tool generated output (regenerate with: py -3 -m tools.func_id)
-tools/func_id/output/
-
-# Global map tool generated output (regenerate with: py -3 -m tools.global_map)
-tools/global_map/output/
-
-# ABI analysis tool generated output (regenerate with: py -3 -m tools.abi_analysis)
-tools/abi_analysis/output/
-
-# Asset tools generated output (regenerate with: py -3 -m tools.asset_tools)
-tools/asset_tools/output/
-
-# Recompiler generated output (regenerate with: py -3 -m tools.recomp)
-tools/recomp/output/
-
-# Generated recompiled source (regenerate with: py -3 -m tools.recomp ... --split 1000)
-src/game/recomp/gen/
-src/game/recomp/gen.*/
-build-xr/
-
-# Claude Code auto memory
-.claude/
-
-# OS files
 Thumbs.db
 Desktop.ini
 .DS_Store
-
-# Temporary / intermediate
 *.tmp
 *.bak
-*.log
-saves/

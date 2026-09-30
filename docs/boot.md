@@ -21,14 +21,14 @@ nv2a,platform}` is no longer built.
 ./regen.sh --disasm                        # disasm + func_id + abi + recomp
 cmake -S . -B build-xr -DBO3_COMPILE_JOBS=3
 cmake --build build-xr --config Release --target burnout3
-RECOMP_PB_EXEC=1 RECOMP_FB_DUMP=frame ./bin/burnout3.exe   # frame000.bmp ...
+RECOMP_PB_REPORT_MS=5000 RECOMP_FB_DUMP=frame ./bin/burnout3.exe --headless   # frame00000.bmp ...
 ```
 
-It runs headless by default, and the runtime opens a window only when
-`RECOMP_FB_WINDOW` is set. Without `RECOMP_PB_EXEC` nothing is rasterised, but
-the title runs about 50x faster, which is the quicker way to follow the boot
-by its file accesses. `saves/` holds the emulated HDD partition images; delete
-it for a first-boot run.
+[running.md](running.md) covers the flags and variables. `RECOMP_PB_EXEC=0`
+turns the software GPU off: nothing is drawn, but the title runs about 50x
+faster, which is the quicker way to follow the boot by its file accesses.
+`saves/` holds the emulated HDD partition images; delete it for a first-boot
+run.
 
 ## What stood between the entry point and the title screen
 
