@@ -16,9 +16,10 @@
 
 ## Later
 
-- Toolkit PRs for the `work/bo3-integration` changes, split into one PR per
-  logical change, after checking HL2 and the other titles for regressions.
-  Then `Setup.cmd` and the README move to xboxrecomp `main`.
+- Check HL2 and the other xboxrecomp titles against the toolkit changes
+  Burnout 3 needed (xboxrecomp #138-#156, merged). They were verified by the
+  toolkit's unit and conformance suites and by Burnout 3, but no other title
+  has been rebuilt on them yet.
 - Four-pad support end to end. The runtime has four ports; Burnout 3's modes are
   two-player split-screen and pass-the-pad Party Crash, so two are enabled.
 - Linux, once the xboxrecomp POSIX runtime covers the NV2A executor and USB.

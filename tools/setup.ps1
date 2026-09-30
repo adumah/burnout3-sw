@@ -13,8 +13,8 @@ param([switch]$Force, [string]$Iso = "")
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 $Toolkit = Join-Path (Split-Path -Parent $Root) 'xboxrecomp'
-# The toolkit branch this title needs until its changes are on xboxrecomp main.
-$ToolkitRef = 'work/bo3-integration'
+# The toolkit branch to clone.
+$ToolkitRef = 'main'
 $GameDir = Join-Path $Root 'Burnout 3 Takedown'
 $Log = Join-Path $Root 'setup.log'
 Set-Location $Root

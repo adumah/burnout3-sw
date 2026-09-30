@@ -8,9 +8,9 @@ All notable changes to this project are recorded here. The format follows
 
 The project now runs on the shared xboxrecomp runtime instead of its own fork,
 and the title boots and plays through its own code. Needs xboxrecomp
-`work/bo3-integration`: the vertex-program interpreter, register combiners,
+#138-#156 (on its `main`): the vertex-program interpreter, register combiners,
 x87 precision control, SSE compare predicates, multi-pad USB, the DPC queue lock
-and per-flip frame dumps. Those go upstream as separate PRs.
+and per-flip frame dumps.
 
 ### Added
 - Every game mode plays: Race, Time Attack, Road Rage and Crash for one player;

@@ -120,12 +120,10 @@ the step says Git Bash.
 
    ```
    git clone https://github.com/sp00nznet/burnout3
-   git clone --branch work/bo3-integration https://github.com/sp00nznet/xboxrecomp
+   git clone https://github.com/sp00nznet/xboxrecomp
    ```
 
-   Burnout 3 currently needs the toolkit's `work/bo3-integration` branch (see
-   [CHANGELOG.md](CHANGELOG.md)). This README moves to `main` once those
-   changes are merged.
+   The toolkit's `main` has everything Burnout 3 needs (xboxrecomp #138-#156).
 
 3. **Unpack your disc image** into `burnout3\Burnout 3 Takedown\`, using the
    toolkit's XDVDFS reader:
