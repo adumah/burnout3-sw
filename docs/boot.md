@@ -38,7 +38,7 @@ or per-title data in `main.c`.
 | # | Symptom | Cause | Fix |
 |---|---|---|---|
 | 1 | Fault in `xbox_MemoryLayoutInit` reading guest 0x80001000; "contiguous window failed (error 487)" | Windows cannot release part of a reservation. The RAM-mirror span leaked 1.8 GB at host 0x80000000. HL2 never saw it because its 768 MB map puts the span above 4 GB. | toolkit `fix/span-reservation-leak` |
-| 2 | XAPI quick-reboots (`HalReturnToFirmware(2)`) right after start | `saves\` did not exist, so `Partition1.img` could not be created | create `saves/` |
+| 2 | XAPI quick-reboots (`HalReturnToFirmware(2)`) right after start | `saves\` did not exist, so `Partition1.img` could not be created | `main.c` creates `saves/` |
 | 3 | Spin in `sub_00351770` | D3D8LTCG waits on the GPU fence: device pointer at 0x0035FB48, `+0x2C` submitted, `*(+0x30)` consumed | `xbox_Nv2aMirrorFence(0x0035FB48, 0x2C, 0x30)` |
 | 4 | Fault in `sub_001FD770`, reading guest 0xFFFFFFEC | RenderWare's audio device is created during engine start. `sub_0020A540` calls `DirectSoundCreate` (0x002F7432), which failed, and the NULL device went on to the pipeline builder. | `RECOMP_AC97_READY=1` plus APU MMIO routing in the fault handler |
 | 5 | Spin at 0x002F8029 | DirectSound writes 3 to a DSP command word and waits for the DSP to clear it. There is no DSP56300 here. | `RECOMP_APU_DSP_ACK=0x825F8810`, observed as `ebx+0x810` in the spin |

@@ -99,9 +99,15 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
   Say "  Git for Windows is missing. It fetches the toolkit, and its bash runs regen.sh."
   Winget-Install 'Git for Windows' 'Git.Git' 'about 60 MB'
 }
-# Git's own bash, not WSL's C:\Windows\System32\bash.exe.
-$Bash = Join-Path (Split-Path -Parent (Split-Path -Parent (Get-Command git).Source)) 'bin\bash.exe'
-if (-not (Test-Path $Bash)) { Fail "Git is installed but its bash.exe is not at $Bash." }
+# Git's own bash, not WSL's C:\Windows\System32\bash.exe. git.exe may be
+# Git\cmd\git.exe or Git\mingw64\bin\git.exe, so walk up to the Git folder.
+$Bash = $null
+$d = Split-Path -Parent (Get-Command git).Source
+while ($d -and -not $Bash) {
+  if (Test-Path (Join-Path $d 'bin\bash.exe')) { $Bash = Join-Path $d 'bin\bash.exe' }
+  $d = Split-Path -Parent $d
+}
+if (-not $Bash) { Fail "Git is installed but its bash.exe was not found beside it." }
 Say "  Git bash: $Bash"
 
 if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {

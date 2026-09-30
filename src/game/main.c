@@ -574,6 +574,9 @@ int main(int argc, char **argv)
 
     printf("Initializing kernel replacement...\n");
     xbox_kernel_init();
+    /* The HDD partitions live in saves\; without the folder Partition1.img
+     * cannot be created and XAPI quick-reboots at once (docs/boot.md #2). */
+    CreateDirectoryA(BO3_SAVE_DIR, NULL);
     xbox_path_init(BO3_GAME_DIR, BO3_SAVE_DIR);
     xbox_kernel_bridge_init();
 
