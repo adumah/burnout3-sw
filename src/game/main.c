@@ -438,6 +438,11 @@ int main(int argc, char **argv)
      * RECOMP_PAD_LIVE) drives the title's own XPP driver. */
     if (!getenv("RECOMP_USB"))
         _putenv_s("RECOMP_USB", "1");
+    /* Two controllers: Burnout 3's split-screen modes are two-player and
+     * are greyed out unless a second pad is connected. Pad 2 follows host
+     * XInput pad 2, or "p2-" steps in RECOMP_PAD_LIVE / RECOMP_PAD_SCRIPT. */
+    if (!getenv("RECOMP_USB_PADS"))
+        _putenv_s("RECOMP_USB_PADS", "2");
 
     if (!load_xbe(path, &xbe_data, &xbe_size))
         return 1;
