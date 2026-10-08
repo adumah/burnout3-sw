@@ -4,7 +4,7 @@ Xbox NTSC-U Burnout 3: Takedown (title 0x4541005B, XDK 5849, Criterion
 RenderWare, D3D8LTCG), lifted to C with xboxrecomp and built for Linux and
 Nintendo Switch (libnx NRO). Started 2026-10-08 from the NFS Carbon port
 (`..\nfsc-xbox`, itself from NFSU1/NFSU2; read `..\nfsu2-xbox\CLAUDE.md` for
-everything the runtime does on Horizon). Not a git repo yet.
+everything the runtime does on Horizon). Repo: git@github.com:antoxa2584x/burnout3-sw.git, branch `switch` (fork of sp00nznet/burnout3; `main` follows upstream, remote `upstream`). core.fileMode is off: files on /mnt/c look executable.
 
 Upstream has a Windows-only Burnout 3 port on the stock toolkit
 (github.com/sp00nznet/burnout3, software NV2A, races at 2-4 fps); a read-only
