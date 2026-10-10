@@ -3284,18 +3284,29 @@ static void vk_flip(void)
         snprintf(path, sizeof path, "%s%05u.bmp", dump_prefix, s_frame);
         dump_surface(s, path);
         {
-            /* RECOMP_VK_DUMP_SURF=<hex va>: that surface too, as <prefix>NNNNN_s.bmp
-             * (an off-screen target the title should be compositing). */
-            static int init;
-            static uint32_t extra;
+            /* RECOMP_VK_DUMP_SURF=<hex va>[,<hex va>...]: those surfaces too,
+             * as <prefix>NNNNN_s.bmp, _s1.bmp, ... (off-screen targets: the
+             * scene a title composites, the faces of a reflection cube). */
+            static int init, n_extra;
+            static uint32_t extra[8];
             VkSurf *x;
+            int k;
             if (!init) {
                 const char *e = getenv("RECOMP_VK_DUMP_SURF");
+                char *end;
                 init = 1;
-                extra = e ? (uint32_t)strtoul(e, NULL, 16) : 0;
+                while (e && *e && n_extra < 8) {
+                    extra[n_extra++] = (uint32_t)strtoul(e, &end, 16);
+                    e = *end == ',' ? end + 1 : NULL;
+                }
             }
-            if (extra && (x = surf_find(extra)) != NULL) {
-                snprintf(path, sizeof path, "%s%05u_s.bmp", dump_prefix, s_frame);
+            for (k = 0; k < n_extra; k++) {
+                if (!extra[k] || (x = surf_find(extra[k])) == NULL)
+                    continue;
+                if (k)
+                    snprintf(path, sizeof path, "%s%05u_s%d.bmp", dump_prefix, s_frame, k);
+                else
+                    snprintf(path, sizeof path, "%s%05u_s.bmp", dump_prefix, s_frame);
                 dump_surface(x, path);
             }
         }

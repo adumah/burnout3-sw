@@ -17,8 +17,10 @@ needed). This port uses the NFS toolkit fork instead (GPU renderers, Switch).
   (`gen/`). Ask before committing or pushing.
 - The Switch build reads the **unpacked** disc at `sdmc:/switch/b3x/game/`.
 - Renderer work targets Vulkan (nv2a_vk), as in the NFS ports.
-- Linux test hygiene as NFSU2: one run at a time, kill by PID (`run/pid`);
-  never `pkill -f` a pattern that matches your own shell.
+- Linux test hygiene as NFSU2: one run at a time, kill by PID (`run/pid`)
+  with **-9** (b3_recomp ignores SIGTERM; live.sh now kill -9s the previous
+  pid). Never `pkill -f` a pattern that matches your own shell. A stale
+  instance shares run.log, pad.cmd and the FRAME_TRACE flag with the new one.
 
 ## Layout and builds
 
@@ -71,32 +73,42 @@ needed). This port uses the NFS toolkit fork instead (GPU renderers, Switch).
 - **Off-screen batch cull drops Burnout draws:** with it on, the car-select
   thumbnails vanished. main.c sets `RECOMP_CULL=0` (cull_batch's corner test
   needs a look before it is turned back on).
-- **3D scene off screen (open):** at car select RenderWare draws the garage
-  car into an off-screen 640x480 target 0x82B24000 (dump it with
-  `RECOMP_VK_DUMP_SURF=82B24000`: car + reflection render correctly, garage
-  walls missing), while the displayed back buffers (0x827A0000/0x828CC000)
-  get only the UI. Nothing samples the target in the traced frames, no
-  other subchannel is used (no blit), no CPU reads it (gdb rwatch), the
-  PVIDEO overlay is unprogrammed and PCRTC shows only the back buffers.
-  Old pushbuffer memory holds 4-stage SET_TEXTURE_OFFSET = 0x02B24000
-  (format 0x00011229, linear A8R8G8B8) blocks, so some pass does sample it.
-  Upstream has the same gap (its vehicle-select shot shows noise).
+- **3D world missing (fixed, toolkit pb_exec):** Burnout renders every 3D
+  scene into an off-screen 640x480 target (0x82B24000 at car select), then
+  downsamples it (320x240 0x82C50000, 160x120 0x82C78000/0x82C84000 blur)
+  and draws it onto the back buffer with one quad (scene + bloom, two
+  texcoord sets). Those quads are immediate mode with the position in
+  SET_VERTEX_DATA2F_M slot 0 (0x1880/0x1884), which pb_exec ignored: only
+  SET_VERTEX3F/4F and DATA4F slot 0 completed a vertex. Now (as xemu) the
+  last component of attribute 0 through any SET_VERTEX_DATA* completes it,
+  and each immediate vertex carries every attribute written in the batch
+  (float4 from attr_const), not just texcoord0. Race, garage car and motion
+  blur appear on GL and Vulkan.
+- **Car paint on Vulkan (open):** the paint's final combiner adds
+  SPECULAR_FOG_FACTOR0 (1, .91, .82) x r1.a, and r1.a comes from the
+  reflection cube's alpha (alpha stage 4: t0.a x t1.a). The cube faces
+  (6 x 128x128 at 0x82CB6000 + n*0x10000, zeta 0x82D16000) are opaque
+  wherever garage geometry was drawn, so the whole body gets the highlight
+  (washed pink); presumably only the light strips (the dome drawn with the
+  64x32 stripe texture 0x82D2B000, alpha-only rows) should. GL has no cube
+  support, samples alpha 0 and looks plain. `RECOMP_VK_CUBE=0` hides it.
+  The garage background is black in the scene and the faces; whether that
+  is the game's dark showroom or missing walls is unverified.
 - **Debug tools added (toolkit):** `RECOMP_FRAME_TRACE=<flag file>` (pb_exec:
   one line per draw/clear/other-subchannel method of the next frame, with
   the CPU-transformed first vertices; touch the file again for another
-  frame); `RECOMP_VK_DUMP_SURF=<va>` (nv2a_vk: dump that surface with each
-  RECOMP_GL_DUMP frame); `RECOMP_GL_TRACE=1` on Vulkan also logs each change
+  frame); `RECOMP_VK_DUMP_SURF=<va>[,<va>...]` (nv2a_vk: dump those surfaces
+  with each RECOMP_GL_DUMP frame, as _s.bmp, _s1.bmp, ...); `RECOMP_GL_TRACE=1` on Vulkan also logs each change
   of render target (pitch/bpp/clip).
 - "You have accepted an invitation to play" box after Start on every boot:
   not investigated (A dismisses it).
 
-## Status (2026-10-08)
+## Status (2026-10-10)
 
 - Linux GL and Vulkan: EA/Criterion/RenderWare intros, title, profile create,
-  save and load, menus, training videos, race loads and drives (HUD, speed)
-  at 60 fps. **3D world missing** everywhere (garage car, Crash Nav globe,
-  race): the title submits only ~30 (2D/UI) draws a frame; under
-  investigation.
+  save and load, menus, training videos; races render the full 3D world
+  with motion blur and drive (35-38 fps GL, ~25 fps Vulkan on lavapipe);
+  car select shows the garage car. Open: car paint on Vulkan (above).
 - Switch: `b3x.nro` (GL) and `b3x-vulkan.nro` built and staged in
   `switch_sd/switch/b3x/` with the disc (2026-10-08); not run on Eden or
   hardware yet. Icon cropped from the title screen; loader logo still NFSU2's.

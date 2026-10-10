@@ -217,8 +217,9 @@ static int surface_write_refused(uint32_t base, uint32_t bytes, const char *what
 #define NV097_SET_VERTEX_DATA4S_M         0x1980   /* + attr*8,  4 shorts */
 
 /* One immediate vertex, as this file packs it for the shared draw path:
- * position float4, diffuse D3DCOLOR, texcoord0 float2. */
-#define IMM_VERTEX_DWORDS 7
+ * position float4, diffuse D3DCOLOR, then a float4 for each attribute in
+ * imm_mask (texcoord0 always, plus whatever else the batch writes). */
+#define IMM_VERTEX_BASE_DWORDS 5
 
 #define NV097_CLEAR_COLOR_MASK            0xF0   /* R,G,B,A bits */
 
@@ -268,7 +269,9 @@ static struct {
      * array); attr_const_gen 0 = not initialised yet. */
     float      attr_const[16][4];
     uint32_t   attr_const_gen;
-    float      imm_tex[2];
+    uint16_t   imm_written;             /* attributes written since BEGIN */
+    uint16_t   imm_mask;                /* attributes each vertex carries */
+    uint32_t   imm_stride;              /* dwords per immediate vertex */
     uint32_t   imm_count;
     int        inline_active;
     uint32_t   draws, verts, nonzero_draws;
@@ -3753,14 +3756,14 @@ out:
  *
  * The title's own table is saved and put back -- it has not stopped using it.
  *
- * ponytail: position, diffuse and texcoord0 only. That is what a 2D quad
- * carries and what this rasteriser samples; a second texcoord set or a normal
- * would need the D3D11 translator, not more slots here.
+ * Position, diffuse, and every other attribute the batch wrote: Burnout 3
+ * composites its 3D scene onto the back buffer with one immediate quad
+ * carrying two texcoord sets (scene and bloom), positions in DATA2F slot 0.
  */
 static void draw_immediate(void)
 {
     VertexAttr saved[NV_VERTEX_ATTRS];
-    uint32_t i;
+    uint32_t i, a, off;
 
     if (s_gpu.imm_count < 3)
         return;
@@ -3774,17 +3777,23 @@ static void draw_immediate(void)
     s_gpu.attr[0].offset = 0;
     s_gpu.attr[3].type = 0; s_gpu.attr[3].size = 4;   /* diffuse D3DCOLOR */
     s_gpu.attr[3].offset = 16;
-    s_gpu.attr[9].type = 2; s_gpu.attr[9].size = 2;   /* texcoord0 float2 */
-    s_gpu.attr[9].offset = 20;
-    s_gpu.attr[0].stride = s_gpu.attr[3].stride = s_gpu.attr[9].stride =
-        IMM_VERTEX_DWORDS * 4;
+    s_gpu.attr[0].stride = s_gpu.attr[3].stride = s_gpu.imm_stride * 4;
+    off = IMM_VERTEX_BASE_DWORDS * 4;
+    for (a = 1; a < NV_VERTEX_ATTRS; a++) {
+        if (!(s_gpu.imm_mask & (1u << a)))
+            continue;
+        s_gpu.attr[a].type = 2; s_gpu.attr[a].size = 4;   /* float4 */
+        s_gpu.attr[a].offset = off;
+        s_gpu.attr[a].stride = s_gpu.imm_stride * 4;
+        off += 16;
+    }
 
     for (i = 0; i < s_gpu.imm_count && i < NV_MAX_INDICES; i++)
         s_gpu.idx[i] = i;
     s_gpu.idx_count = i;
 
     /* fetch_attr bounds-checks against inline_count dwords. */
-    s_gpu.inline_count = s_gpu.imm_count * IMM_VERTEX_DWORDS;
+    s_gpu.inline_count = s_gpu.imm_count * s_gpu.imm_stride;
     s_gpu.inline_active = 1;
     draw_primitive();
     s_gpu.inline_active = 0;
@@ -3797,13 +3806,32 @@ static void draw_immediate(void)
 /* A vertex is complete: append it in the layout draw_immediate describes. */
 static void imm_emit_vertex(void)
 {
-    uint32_t at = s_gpu.imm_count * IMM_VERTEX_DWORDS;
+    uint32_t at, a, o;
 
-    if (!s_gpu.prim || at + IMM_VERTEX_DWORDS > NV_MAX_INLINE)
+    if (!s_gpu.prim)
+        return;
+    if (s_gpu.imm_count == 0) {
+        /* The layout is fixed by the first vertex: what the batch set up
+         * before it. Attributes it never writes read their current value. */
+        attr_const_init();
+        s_gpu.imm_mask = (uint16_t)((s_gpu.imm_written | (1u << 9)) & ~((1u << 0) | (1u << 3)));
+        s_gpu.imm_stride = IMM_VERTEX_BASE_DWORDS;
+        for (a = 1; a < NV_VERTEX_ATTRS; a++)
+            if (s_gpu.imm_mask & (1u << a))
+                s_gpu.imm_stride += 4;
+    }
+    at = s_gpu.imm_count * s_gpu.imm_stride;
+    if (at + s_gpu.imm_stride > NV_MAX_INLINE)
         return;
     memcpy(&s_gpu.inline_buf[at],     s_gpu.imm_pos, 4 * sizeof(float));
     memcpy(&s_gpu.inline_buf[at + 4], &s_gpu.imm_diffuse, sizeof(uint32_t));
-    memcpy(&s_gpu.inline_buf[at + 5], s_gpu.imm_tex, 2 * sizeof(float));
+    o = at + IMM_VERTEX_BASE_DWORDS;
+    for (a = 1; a < NV_VERTEX_ATTRS; a++) {
+        if (!(s_gpu.imm_mask & (1u << a)))
+            continue;
+        memcpy(&s_gpu.inline_buf[o], s_gpu.attr_const[a], 4 * sizeof(float));
+        o += 4;
+    }
     s_gpu.imm_count++;
 }
 
@@ -3860,6 +3888,7 @@ static void attr_const_write(uint32_t method, uint32_t param)
         c[2] = 0.0f;
         c[3] = 1.0f;
     }
+    s_gpu.imm_written |= (uint16_t)(1u << ((c - s_gpu.attr_const[0]) / 4));
     if (++s_gpu.attr_const_gen == 0)
         s_gpu.attr_const_gen = 1;
 }
@@ -3877,6 +3906,16 @@ static int imm_vertex_method(uint32_t method, uint32_t param)
     if (method >= NV097_SET_VERTEX_DATA2F_M
             && method < NV097_SET_VERTEX_DATA4F_M + NV_VERTEX_ATTRS * 16)
         attr_const_write(method, param);
+    /* Attribute 0 through any SET_VERTEX_DATA* is the position, and its last
+     * component completes a vertex as SET_VERTEX4F's does (xemu's
+     * pgraph_finish_inline_buffer_vertex). */
+    if (method == NV097_SET_VERTEX_DATA2S || method == NV097_SET_VERTEX_DATA4UB
+            || method == NV097_SET_VERTEX_DATA2F_M + 4
+            || method == NV097_SET_VERTEX_DATA4S_M + 4) {
+        memcpy(s_gpu.imm_pos, s_gpu.attr_const[0], sizeof s_gpu.imm_pos);
+        imm_emit_vertex();
+        return 1;
+    }
     if (method >= NV097_SET_VERTEX_DATA2S
             && method < NV097_SET_VERTEX_DATA2S + NV_VERTEX_ATTRS * 4)
         return 1;
@@ -3902,10 +3941,7 @@ static int imm_vertex_method(uint32_t method, uint32_t param)
     }
     if (method >= NV097_SET_VERTEX_DATA2F_M
             && method < NV097_SET_VERTEX_DATA2F_M + NV_VERTEX_ATTRS * 8) {
-        uint32_t off = method - NV097_SET_VERTEX_DATA2F_M;
-        if (off / 8 == 9)                /* attribute 9 is texture coord 0 */
-            s_gpu.imm_tex[(off % 8) / 4] = v.f;
-        return 1;
+        return 1;                        /* attr_const has it */
     }
     if (method >= NV097_SET_VERTEX_DATA4F_M
             && method < NV097_SET_VERTEX_DATA4F_M + NV_VERTEX_ATTRS * 16) {
@@ -3915,8 +3951,6 @@ static int imm_vertex_method(uint32_t method, uint32_t param)
             s_gpu.imm_pos[c] = v.f;
             if (c == 3)
                 imm_emit_vertex();
-        } else if (attr == 9 && c < 2) {
-            s_gpu.imm_tex[c] = v.f;
         }
         return 1;
     }
@@ -4299,6 +4333,7 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
             s_gpu.idx_count = 0;
             s_gpu.inline_count = 0;
             s_gpu.imm_count = 0;
+            s_gpu.imm_written = 0;
         } else {
             /* Three ways a batch can have arrived, and only one is in use at
              * a time: vertices completed by SET_VERTEX4F, a payload written
