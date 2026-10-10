@@ -281,6 +281,46 @@ static void tex_fetch(Out *o, int t, uint32_t mode, const Nv2aPshKey *k)
     }
 }
 
+/* The fog unit (xemu's vsh.c fog modes), here per pixel on the interpolated
+ * fog coordinate. u_fogp: see nv2a_fog_params. */
+#define NV2A_FOG_GLSL \
+    "float nv2a_fog(float d) {\n" \
+    "    if (u_fogp.w < 0.5) return clamp(d, 0.0, 1.0);\n" \
+    "    if (u_fogp.w < 1.5) return 1.0;\n" \
+    "    int m = int(u_fogp.z + 0.5);\n" \
+    "    float f;\n" \
+    "    if (isinf(d)) d = 0.0;\n" \
+    "    if (m == 0 || m == 3) f = u_fogp.x + d * u_fogp.y - 1.0;\n" \
+    "    else if (m == 1 || m == 4) f = u_fogp.x + exp2(d * u_fogp.y * 16.0) - 1.5;\n" \
+    "    else f = u_fogp.x + exp2(-d * d * u_fogp.y * u_fogp.y * 32.0) - 1.5;\n" \
+    "    if (m >= 3) f = abs(f);\n" \
+    "    return clamp(f, 0.0, 1.0);\n" \
+    "}\n"
+
+void nv2a_fog_params(const uint32_t *regs, uint32_t xform, float out[4])
+{
+    union { uint32_t u; float f; } p0, p1;
+
+    p0.u = regs[0x09C0 / 4];                    /* SET_FOG_PARAMS */
+    p1.u = regs[0x09C4 / 4];
+    out[0] = p0.f;
+    out[1] = p1.f;
+    switch (regs[0x029C / 4]) {                 /* SET_FOG_MODE */
+    case 0x0800: out[2] = 1.0f; break;          /* EXP */
+    case 0x0801: out[2] = 2.0f; break;          /* EXP2 */
+    case 0x0802: out[2] = 4.0f; break;          /* EXP_ABS */
+    case 0x0803: out[2] = 5.0f; break;          /* EXP2_ABS */
+    case 0x0804: out[2] = 3.0f; break;          /* LINEAR_ABS */
+    default:     out[2] = 0.0f; break;          /* LINEAR (0x2601) */
+    }
+    /* A vertex program's oFog.x is the fog distance. The fixed-function
+     * path does not generate one (vFog is 0), so it keeps the raw read. */
+    if (xform != 2)
+        out[3] = 0.0f;
+    else
+        out[3] = regs[0x02A4 / 4] ? 2.0f : 1.0f; /* SET_FOG_ENABLE */
+}
+
 int nv2a_gl_psh(const Nv2aPshKey *k, char *buf, size_t cap)
 {
     Out o = { buf, cap, 0 };
@@ -310,8 +350,10 @@ int nv2a_gl_psh(const Nv2aPshKey *k, char *buf, size_t cap)
             "    vec4 u_fc0; vec4 u_fc1;\n"
             "    vec4 u_fogcolor;\n"
             "    int u_alpha_func; float u_alpha_ref;\n"
+            "    vec4 u_fogp;\n"
             "};\n"
             "layout(location = 0) out vec4 fragColor;\n"
+            NV2A_FOG_GLSL
             "void main() {\n");
     } else
     emit(&o,
@@ -325,7 +367,9 @@ int nv2a_gl_psh(const Nv2aPshKey *k, char *buf, size_t cap)
         "uniform vec4 u_fc0; uniform vec4 u_fc1;\n"
         "uniform vec4 u_fogcolor;\n"
         "uniform int u_alpha_func; uniform float u_alpha_ref;\n"
+        "uniform vec4 u_fogp;\n"
         "out vec4 fragColor;\n"
+        NV2A_FOG_GLSL
         "void main() {\n");
     for (i = 0; i < 4; i++)
         tex_fetch(&o, (int)i, (k->shader_program >> (5 * i)) & 0x1F, k);
@@ -333,7 +377,7 @@ int nv2a_gl_psh(const Nv2aPshKey *k, char *buf, size_t cap)
         "    vec4 ZERO = vec4(0.0);\n"
         "    vec4 V0 = vD0, V1 = vD1;\n"
         "    vec4 R0 = vec4(0.0, 0.0, 0.0, T0.a), R1 = vec4(0.0);\n"
-        "    vec4 FOG = vec4(u_fogcolor.rgb, clamp(vFog, 0.0, 1.0));\n");
+        "    vec4 FOG = vec4(u_fogcolor.rgb, nv2a_fog(vFog));\n");
     for (i = 0; i < count; i++)
         stage(&o, (int)i, k);
 

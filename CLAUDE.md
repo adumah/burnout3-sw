@@ -84,21 +84,30 @@ needed). This port uses the NFS toolkit fork instead (GPU renderers, Switch).
   and each immediate vertex carries every attribute written in the batch
   (float4 from attr_const), not just texcoord0. Race, garage car and motion
   blur appear on GL and Vulkan.
-- **Car paint on Vulkan (open):** the paint's final combiner adds
-  SPECULAR_FOG_FACTOR0 (1, .91, .82) x r1.a, and r1.a comes from the
-  reflection cube's alpha (alpha stage 4: t0.a x t1.a). The cube faces
-  (6 x 128x128 at 0x82CB6000 + n*0x10000, zeta 0x82D16000) are opaque
-  wherever garage geometry was drawn, so the whole body gets the highlight
-  (washed pink); presumably only the light strips (the dome drawn with the
-  64x32 stripe texture 0x82D2B000, alpha-only rows) should. GL has no cube
-  support, samples alpha 0 and looks plain. `RECOMP_VK_CUBE=0` hides it.
-  The garage background is black in the scene and the faces; whether that
-  is the game's dark showroom or missing walls is unverified.
+- **Garage black, fog (fixed, toolkit gl_psh):** the shaders read the fog
+  factor as the raw oFog.x. Burnout's vertex programs write a fog distance
+  (garage: oFog = min(z, 0)) and its final combiners lerp to the fog colour
+  by it, so the garage came out as pure fog colour (black). Now, as xemu,
+  the fog unit runs on it for vertex-program draws: SET_FOG_MODE
+  linear/exp/exp2 (+abs) with SET_FOG_PARAMS, and factor 1 when
+  SET_FOG_ENABLE is off (uniform u_fogp, nv2a_fog_params). Fixed-function
+  draws keep the raw read (no fog generation there yet).
+- **Car paint washed pink on Vulkan (fixed, toolkit nv2a_vk):** the paint
+  adds SPECULAR_FOG_FACTOR0 x (alpha of the reflection cube, thresholded),
+  and the cube faces (6 x 128x128 at 0x82CB6000 + n*0x10000) are cleared
+  with CLEAR_SURFACE 0x83: alpha alone. Vulkan skipped clears with a
+  partial colour mask, so the face alpha stayed 1 and the whole body got
+  the highlight. vk_clear now draws a masked triangle for those
+  (clear_pipe). GL was right (glClear honours the mask) but has no cube
+  maps, so its paint shows no reflection.
 - **Debug tools added (toolkit):** `RECOMP_FRAME_TRACE=<flag file>` (pb_exec:
   one line per draw/clear/other-subchannel method of the next frame, with
   the CPU-transformed first vertices; touch the file again for another
   frame); `RECOMP_VK_DUMP_SURF=<va>[,<va>...]` (nv2a_vk: dump those surfaces
-  with each RECOMP_GL_DUMP frame, as _s.bmp, _s1.bmp, ...); `RECOMP_GL_TRACE=1` on Vulkan also logs each change
+  with each RECOMP_GL_DUMP frame, as _s.bmp, _s1.bmp, ...;
+  `RECOMP_VK_DUMP_RAW=1` adds .raw BGRA files with alpha); FRAME_TRACE draw
+  lines also show the first vertex's diffuse, attribute 3's layout, the
+  final combiner, alpha ICW0, factor0 and blend; `RECOMP_GL_TRACE=1` on Vulkan also logs each change
   of render target (pitch/bpp/clip).
 - "You have accepted an invitation to play" box after Start on every boot:
   not investigated (A dismisses it).
@@ -108,7 +117,7 @@ needed). This port uses the NFS toolkit fork instead (GPU renderers, Switch).
 - Linux GL and Vulkan: EA/Criterion/RenderWare intros, title, profile create,
   save and load, menus, training videos; races render the full 3D world
   with motion blur and drive (35-38 fps GL, ~25 fps Vulkan on lavapipe);
-  car select shows the garage car. Open: car paint on Vulkan (above).
+  car select shows the lit garage and the car with its reflections.
 - Switch: `b3x.nro` (GL) and `b3x-vulkan.nro` built and staged in
   `switch_sd/switch/b3x/` with the disc (2026-10-08); not run on Eden or
   hardware yet. Icon cropped from the title screen; loader logo still NFSU2's.

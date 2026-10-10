@@ -175,6 +175,7 @@ static uint32_t s_fi;
 static VkCommandBuffer s_cb;   /* s_f->cb while recording */
 static uint32_t s_cb_gen;      /* bumped at every vkBeginCommandBuffer */
 static int s_dyn_valid;
+static int s_pipe_foreign;      /* a pipeline not from pipe_get is bound */
 
 static void garbage_add_pipe(VkPipeline pipe);
 static void garbage_add(VkImage img, VkImageView view, VkDeviceMemory mem)
@@ -2649,6 +2650,7 @@ typedef struct {
     int32_t afunc;
     float aref;
     float pad[2];
+    float fogp[4];               /* nv2a_fog_params */
 } FsBlock;
 
 /* ── Instancing ───────────────────────────────────────────────────────
@@ -2947,10 +2949,11 @@ static void vk_draw_raw(const Nv2aRawBatch *b)
     begin_rendering(s, d);
     s->dirty = 1;
     s->gen++;
-    if (pipe != cur_pipe || cur_pipe_gen != s_cb_gen) {
+    if (pipe != cur_pipe || cur_pipe_gen != s_cb_gen || s_pipe_foreign) {
         vkCmdBindPipeline(s_cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
         cur_pipe = pipe;
         cur_pipe_gen = s_cb_gen;
+        s_pipe_foreign = 0;
     }
     apply_dynamic(r, d != NULL, topo);
     set_surface_scissor(r, s);
@@ -2997,6 +3000,7 @@ static void vk_draw_raw(const Nv2aRawBatch *b)
             }
             fb->afunc = r[0x300 / 4] ? (int32_t)r[0x33C / 4] : 0x207;
             fb->aref = (float)(r[0x340 / 4] & 0xFF);
+            nv2a_fog_params(r, b->xform, fb->fogp);
             ub[1].buffer = s_f->ring;
             ub[1].offset = fat;
             ub[1].range = sizeof(FsBlock);
@@ -3063,6 +3067,102 @@ static void vk_draw_raw(const Nv2aRawBatch *b)
         s_vtrace--;
 }
 
+/* A clear of some colour channels only. vkCmdClearAttachments has no write
+ * mask, so this draws one triangle over the rect with the channels as the
+ * pipeline's colour write mask. Burnout 3 clears its reflection cube faces
+ * with A alone (0x83): the alpha is a highlight mask that only the light
+ * fittings write, and without the clear it stayed 1 over every wall. */
+static VkPipelineLayout s_clr_layout;
+static VkShaderModule s_clr_vs, s_clr_fs;
+static VkPipeline s_clr_pipe[16][2];            /* [write mask][depth attached] */
+
+static VkPipeline clear_pipe(uint32_t vkmask, int depth)
+{
+    VkGraphicsPipelineCreateInfo ci = { VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+    VkPipelineShaderStageCreateInfo st[2];
+    VkPipelineVertexInputStateCreateInfo vi = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+    VkPipelineInputAssemblyStateCreateInfo ia = { VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+    VkPipelineViewportStateCreateInfo vp = { VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+    VkPipelineRasterizationStateCreateInfo rs = { VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+    VkPipelineMultisampleStateCreateInfo ms = { VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+    VkPipelineDepthStencilStateCreateInfo ds = { VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+    VkPipelineColorBlendAttachmentState ba;
+    VkPipelineColorBlendStateCreateInfo cb = { VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+    VkPipelineDynamicStateCreateInfo dy = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+    VkPipelineRenderingCreateInfo rci = { VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
+    VkFormat cfmt = VK_FORMAT_B8G8R8A8_UNORM;
+    static const VkDynamicState dyn[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipeline *pp = &s_clr_pipe[vkmask & 15][depth != 0];
+
+    if (*pp)
+        return *pp;
+    if (!s_clr_layout) {
+        VkPushConstantRange pc = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16 };
+        VkPipelineLayoutCreateInfo pli = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+        pli.pushConstantRangeCount = 1;
+        pli.pPushConstantRanges = &pc;
+        if (vkCreatePipelineLayout(s_dev, &pli, NULL, &s_clr_layout) != VK_SUCCESS)
+            return VK_NULL_HANDLE;
+        s_clr_vs = compile(GLSLANG_STAGE_VERTEX,
+            "#version 450\n"
+            "void main() {\n"
+            "    vec2 p = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);\n"
+            "    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n"
+            "}\n");
+        s_clr_fs = compile(GLSLANG_STAGE_FRAGMENT,
+            "#version 450\n"
+            "layout(push_constant) uniform P { vec4 c; };\n"
+            "layout(location = 0) out vec4 o;\n"
+            "void main() { o = c; }\n");
+    }
+    if (!s_clr_vs || !s_clr_fs)
+        return VK_NULL_HANDLE;
+    memset(st, 0, sizeof st);
+    st[0].sType = st[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    st[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    st[0].module = s_clr_vs;
+    st[0].pName = "main";
+    st[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    st[1].module = s_clr_fs;
+    st[1].pName = "main";
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    vp.viewportCount = 1;
+    vp.scissorCount = 1;
+    rs.polygonMode = VK_POLYGON_MODE_FILL;
+    rs.cullMode = VK_CULL_MODE_NONE;
+    rs.lineWidth = 1.0f;
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    memset(&ba, 0, sizeof ba);
+    ba.colorWriteMask = vkmask & 15;
+    cb.attachmentCount = 1;
+    cb.pAttachments = &ba;
+    dy.dynamicStateCount = (uint32_t)(sizeof dyn / sizeof dyn[0]);
+    dy.pDynamicStates = dyn;
+    rci.colorAttachmentCount = 1;
+    rci.pColorAttachmentFormats = &cfmt;
+    if (depth) {
+        rci.depthAttachmentFormat = s_depth_fmt;
+        rci.stencilAttachmentFormat = s_depth_fmt;
+    }
+    ci.pNext = &rci;
+    ci.stageCount = 2;
+    ci.pStages = st;
+    ci.pVertexInputState = &vi;
+    ci.pInputAssemblyState = &ia;
+    ci.pViewportState = &vp;
+    ci.pRasterizationState = &rs;
+    ci.pMultisampleState = &ms;
+    ci.pDepthStencilState = &ds;
+    ci.pColorBlendState = &cb;
+    ci.pDynamicState = &dy;
+    ci.layout = s_clr_layout;
+    if (vkCreateGraphicsPipelines(s_dev, s_pcache, 1, &ci, NULL, pp) != VK_SUCCESS) {
+        LOGE("clear pipeline creation failed\n");
+        *pp = VK_NULL_HANDLE;
+    }
+    return *pp;
+}
+
 static void vk_clear(const Nv2aSurface *sf, const Nv2aRenderState *rs,
                      uint32_t flags, uint32_t argb, uint32_t zstencil)
 {
@@ -3106,10 +3206,6 @@ static void vk_clear(const Nv2aSurface *sf, const Nv2aRenderState *rs,
         ca[nca].colorAttachment = 0;
         argb_vec4(argb, ca[nca].clearValue.color.float32);
         nca++;
-    } else if (flags & 0xF0) {
-        static int warned;
-        if (!warned++)
-            LOGE("clear with a partial colour mask (0x%X) not done yet\n", flags & 0xF0);
     }
     if (d && (flags & 0x3)) {
         uint32_t zmax = s_regs ? zmax_of(s_regs) : 0xFFFFFFu;
@@ -3119,6 +3215,25 @@ static void vk_clear(const Nv2aSurface *sf, const Nv2aRenderState *rs,
         ca[nca].clearValue.depthStencil.depth = (float)((double)z / (double)zmax);
         ca[nca].clearValue.depthStencil.stencil = zstencil & 0xFF;
         nca++;
+    }
+    if ((flags & 0xF0) && (flags & 0xF0) != 0xF0) {
+        /* CLEAR_SURFACE R 0x10, G 0x20, B 0x40, A 0x80: the same order as
+         * VkColorComponentFlags. */
+        VkPipeline cp = clear_pipe((flags >> 4) & 0xF, d != NULL);
+        if (cp) {
+            float c[4];
+            argb_vec4(argb, c);
+            begin_rendering(s, d);
+            vkCmdBindPipeline(s_cb, VK_PIPELINE_BIND_POINT_GRAPHICS, cp);
+            vkCmdSetScissor(s_cb, 0, 1, &rect.rect);
+            s_sc_cur = rect.rect;
+            vkCmdPushConstants(s_cb, s_clr_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16, c);
+            vkCmdDraw(s_cb, 3, 1, 0, 0);
+            s_pipe_foreign = 1;                 /* the next draw rebinds its own */
+            s_dyn_valid = 0;                    /* and resets its dynamic state */
+            s->dirty = 1;
+            s->gen++;
+        }
     }
     if (!nca)
         return;
@@ -3183,6 +3298,17 @@ static void dump_surface(VkSurf *s, const char *path)
     flush_frame_wait();
     if (vkMapMemory(s_dev, mem, 0, bci.size, 0, &ptr) == VK_SUCCESS) {
         dump_bmp(path, (const uint8_t *)ptr, s->pw, s->ph);
+        /* RECOMP_VK_DUMP_RAW=1: also <path>.raw, the stored BGRA bytes with
+         * alpha (the BMP drops it). */
+        if (getenv("RECOMP_VK_DUMP_RAW")) {
+            char rp[300];
+            FILE *f;
+            snprintf(rp, sizeof rp, "%s.raw", path);
+            if ((f = fopen(rp, "wb")) != NULL) {
+                fwrite(ptr, 4, (size_t)s->pw * s->ph, f);
+                fclose(f);
+            }
+        }
         vkUnmapMemory(s_dev, mem);
     }
     vkDestroyBuffer(s_dev, buf, NULL);

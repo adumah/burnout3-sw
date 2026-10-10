@@ -786,7 +786,7 @@ typedef struct {
     Nv2aPshKey pkey;
     GLuint     prog;
     GLint      u_c, u_surf, u_aa, u_m, u_vpoff, u_xform;
-    GLint      u_t[4], u_tscale, u_c0, u_c1, u_fc0, u_fc1, u_fogcolor, u_afunc, u_aref;
+    GLint      u_t[4], u_tscale, u_c0, u_c1, u_fc0, u_fc1, u_fogcolor, u_afunc, u_aref, u_fogp;
     uint32_t   used;
     int        vpc_valid;       /* vpc holds what this program's "c" was given */
     uint32_t   vpc_gen;         /* ... as of the executor's constant version */
@@ -797,7 +797,7 @@ typedef struct {
     int        uni_valid;       /* uni holds the rest of its uniforms */
     struct GlUni {
         float surf[4], aa[2], m[16], vpoff[4], tscale[4][2];
-        float c0[8][4], c1[8][4], fog[4], fc[2][4], aref;
+        float c0[8][4], c1[8][4], fog[4], fc[2][4], aref, fogp[4];
         int   xform, afunc;
     } uni;
 } GlProg;
@@ -1068,6 +1068,7 @@ static GlProg *prog_get(const Nv2aRawBatch *b, const Nv2aPshKey *pk)
     p->u_c0 = glGetUniformLocation(p->prog, "u_c0");
     p->u_c1 = glGetUniformLocation(p->prog, "u_c1");
     p->u_fogcolor = glGetUniformLocation(p->prog, "u_fogcolor");
+    p->u_fogp = glGetUniformLocation(p->prog, "u_fogp");
     p->u_fc0 = glGetUniformLocation(p->prog, "u_fc0");
     p->u_fc1 = glGetUniformLocation(p->prog, "u_fc1");
     p->u_afunc = glGetUniformLocation(p->prog, "u_alpha_func");
@@ -1724,6 +1725,7 @@ static void gl_draw_raw(const Nv2aRawBatch *b)
         argb_vec4(r[0x1E20 / 4], u.fc[0]);      /* SPECULAR_FOG_FACTOR0/1 */
         argb_vec4(r[0x1E24 / 4], u.fc[1]);
         u.aref = (float)(r[0x340 / 4] & 0xFF);
+        nv2a_fog_params(r, b->xform, u.fogp);
         u.xform = b->xform == 1 ? 1 : 0;
         u.afunc = r[0x300 / 4] ? (GLint)r[0x33C / 4] : 0x207;
         if (!p->uni_valid || memcmp(&u, &p->uni, sizeof u) != 0) {
@@ -1742,6 +1744,7 @@ static void gl_draw_raw(const Nv2aRawBatch *b)
             if (p->u_fc1 >= 0) glUniform4fv(p->u_fc1, 1, u.fc[1]);
             if (p->u_afunc >= 0) glUniform1i(p->u_afunc, u.afunc);
             if (p->u_aref >= 0) glUniform1f(p->u_aref, u.aref);
+            if (p->u_fogp >= 0) glUniform4fv(p->u_fogp, 1, u.fogp);
         }
     }
 
