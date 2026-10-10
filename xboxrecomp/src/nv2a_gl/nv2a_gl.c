@@ -888,7 +888,7 @@ static const char *prog_cache_path(void)
     if (e && *e)
         return e;
 #if defined(__SWITCH__)
-    return "sdmc:/switch/nfscx/progcache.bin";
+    return "sdmc:/switch/b3x/progcache.bin";
 #else
     return "progcache.bin";
 #endif

@@ -1270,7 +1270,7 @@ static int s_cache_off = -1;
 static const char *cache_dir(void)
 {
 #if defined(__SWITCH__)
-    return "sdmc:/switch/nfscx/";
+    return "sdmc:/switch/b3x/";
 #else
     return "";
 #endif

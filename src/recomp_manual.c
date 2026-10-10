@@ -368,6 +368,235 @@ inline void sub_00244DF0(void)
 }
 
 
+/* ── XMV colour conversion, sub_002CD892 ────────────────────
+ *
+ * The XMV player's YUV 4:2:0 -> 32-bit pixel converter for one 16x16 block,
+ * hand-written MMX/SSE: stdcall, 7 arguments (Y, U, V, Y pitch, UV pitch,
+ * destination, destination pitch), ret 28. The coefficients come in
+ * registers the caller set up once per frame: mm4 (zero), mm5 (pmaddwd
+ * weights), mm6 (chroma bias), mm7 (luma bias and the alpha byte, << 20),
+ * xmm4-xmm7 (chroma weights). Eight pixels by two rows a step, left half
+ * then right half, eight steps down.
+ *
+ * Half of the game thread on Linux during the intro and menu movies, and
+ * the Switch ran those at 4 fps. Lifted, every op goes through the
+ * thread-local guest registers, reloaded after each store since a guest
+ * store may alias them. This is the same sequence of the same lane helpers
+ * on locals, so it gives the same bytes; contraction is off so that a*b+c
+ * is not fused into an FMA (which rounds once) on the Switch.
+ * RECOMP_NATIVE=0 lifted, RECOMP_NATIVE_CHECK=1 both and compare. */
+extern void sub_002CD892_gen(void);
+
+typedef struct {
+    RecompMmx m4, m5, m7;
+    RecompXmm x4, x5, x6, x7;
+} XmvCoef;
+
+/* cvtps2pi, psrad 15, packssdw, packuswb: clamp(round(f) >> 15, 0, 255).
+ * Out of range cvtps2pi gives 0x80000000, which clamps to 0 (an ARM
+ * conversion would saturate instead, hence the explicit check). */
+static inline uint32_t xmv_u8(float f)
+{
+    int32_t i;
+#if defined(__i386__) || defined(__x86_64__)
+    i = _mm_cvtss_si32(_mm_set_ss(f));
+#else
+    if (!(f >= -2147483648.0f && f < 2147483648.0f))
+        return 0;
+    i = (int32_t)__builtin_rintf(f);    /* host rounding is never changed: nearest */
+#endif
+    i >>= 15;
+    return i < 0 ? 0u : i > 255 ? 255u : (uint32_t)i;
+}
+
+static inline RecompMmx xmv_pack(float lo, float hi, RecompMmx m4)
+{
+    RecompMmx r;
+
+    if (__builtin_expect(m4.q == 0, 1)) {   /* mm4 is the zero register here */
+        r.ud[0] = xmv_u8(lo);
+        r.ud[1] = xmv_u8(hi);
+        return r;
+    }
+    r = MMX_FROM_PS(lo, hi, 0);
+    r = MMX_PSRAD(r, 15u);
+    r = MMX_PACKSSDW(r, m4);
+    r = MMX_PACKUSWB(r, m4);
+    r = MMX_PUNPCKLBW(r, m4);
+    return MMX_PUNPCKLWD(r, m4);
+}
+
+/* loc_002CD998: four luma bytes in y -> four pixels in *o0, *o1. */
+static inline void xmv_quad(const XmvCoef *k, RecompMmx y, RecompXmm x1, RecompXmm x2,
+                            RecompXmm *x0, RecompXmm *x3, RecompMmx *o0, RecompMmx *o1)
+{
+    RecompMmx a, b, c;
+
+    a = MMX_PUNPCKLBW(y, k->m4);
+    a = MMX_PADDW(a, k->m7);
+    b = MMX_PSHUFW(a, 250u);
+    a = MMX_PSHUFW(a, 80u);
+    a = MMX_PMADDWD(a, k->m5);
+    b = MMX_PMADDWD(b, k->m5);
+    *x0 = XMM_FROM_PI(*x0, a);
+    *x3 = XMM_FROM_PI(*x3, b);
+    *x0 = XMM_SHUFFLE(*x0, *x3, 0x44);
+    *x3 = XMM_ADD(XMM_MUL(x1, k->x4), *x0);
+    a = MMX_PSLLD(k->m7, 20u);
+    a = MMX_POR(a, xmv_pack(x3->f[0], x3->f[1], k->m4));
+    b = MMX_PSLLD(k->m7, 20u);
+    *x3 = XMM_SHUFFLE(*x3, *x3, 0x2E);
+    b = MMX_POR(b, xmv_pack(x3->f[0], x3->f[1], k->m4));
+    *x3 = XMM_ADD(XMM_MUL(x2, k->x7), *x0);
+    a = MMX_POR(a, MMX_PSLLQ(xmv_pack(x3->f[0], x3->f[1], k->m4), 16u));
+    *x3 = XMM_SHUFFLE(*x3, *x3, 0x2E);
+    b = MMX_POR(b, MMX_PSLLQ(xmv_pack(x3->f[0], x3->f[1], k->m4), 16u));
+    *x3 = XMM_MUL(x2, k->x5);
+    *x0 = XMM_ADD(*x0, *x3);
+    *x3 = XMM_MUL(x1, k->x6);
+    *x0 = XMM_ADD(*x0, *x3);
+    c = MMX_PSLLQ(xmv_pack(x0->f[0], x0->f[1], k->m4), 8u);
+    a = MMX_POR(a, c);
+    *x0 = XMM_SHUFFLE(*x0, *x0, 0x2E);
+    c = MMX_PSLLQ(xmv_pack(x0->f[0], x0->f[1], k->m4), 8u);
+    b = MMX_POR(b, c);
+    *o0 = a;
+    *o1 = b;
+}
+
+static inline uint32_t xmv_ld32(uint32_t va)
+{
+    uint32_t v;
+    memcpy(&v, (const void *)XBOX_PTR(va), 4);
+    return v;
+}
+
+/* two biased chroma dwords -> [c0, c0, c1, c1] */
+static inline RecompXmm xmv_chroma(RecompXmm x, RecompMmx c)
+{
+    x = XMM_FROM_PI(x, c);
+    return XMM_SHUFFLE(x, x, 0x50);
+}
+
+__attribute__((optimize("fp-contract=off")))
+static void xmv_yuv_native(void)
+{
+    uint32_t a = esp + 4;                       /* past the return address */
+    uint32_t ys = MEM32(a), us = MEM32(a + 4), vs = MEM32(a + 8);
+    uint32_t ypitch = MEM32(a + 12), uvpitch = MEM32(a + 16);
+    uint32_t dst = MEM32(a + 20), dpitch = MEM32(a + 24);
+    uint32_t n;
+    XmvCoef k = { mm4, mm5, mm7, xmm4, xmm5, xmm6, xmm7 };
+    RecompMmx m6 = mm6, r0 = mm0, r1 = mm1, r2 = mm2, r3 = mm3, u, v;
+    RecompXmm x0 = xmm0, x1 = xmm1, x2 = xmm2, x3 = xmm3;
+
+    for (n = 16;;) {
+        u = MMX_PUNPCKLBW(MMX_FROM32(xmv_ld32(us)), k.m4);
+        r3 = u;
+        x1 = xmv_chroma(x1, MMX_PADDD(MMX_PUNPCKLWD(u, k.m4), m6));
+        v = MMX_PUNPCKLBW(MMX_FROM32(xmv_ld32(vs)), k.m4);
+        r1 = v;
+        x2 = xmv_chroma(x2, MMX_PADDD(MMX_PUNPCKLWD(v, k.m4), m6));
+        r3 = MMX_PUNPCKHWD(r3, r1);
+
+        xmv_quad(&k, MMX_FROM32(xmv_ld32(ys)), x1, x2, &x0, &x3, &r0, &r1);
+        MMX_STORE(dst, r0);
+        MMX_STORE(dst + 8, r1);
+        xmv_quad(&k, MMX_FROM32(xmv_ld32(ys + ypitch)), x1, x2, &x0, &x3, &r0, &r1);
+        MMX_STORE(dst + dpitch, r0);
+        MMX_STORE(dst + dpitch + 8, r1);
+
+        r0 = MMX_PADDD(MMX_PSRLD(MMX_PSLLD(r3, 16u), 16u), m6);
+        x1 = xmv_chroma(x1, r0);
+        r3 = MMX_PADDD(MMX_PSRLD(r3, 16u), m6);
+        x2 = xmv_chroma(x2, r3);
+
+        xmv_quad(&k, MMX_FROM32(xmv_ld32(ys + 4)), x1, x2, &x0, &x3, &r0, &r1);
+        MMX_STORE(dst + 0x10, r0);
+        MMX_STORE(dst + 0x18, r1);
+        xmv_quad(&k, MMX_FROM32(xmv_ld32(ys + ypitch + 4)), x1, x2, &x0, &x3, &r0, &r1);
+        MMX_STORE(dst + dpitch + 0x10, r0);
+        MMX_STORE(dst + dpitch + 0x18, r1);
+
+        if (--n == 0)
+            break;
+        if (n & 1) {                            /* right half of the same rows */
+            dst += 0x20; ys += 8; us += 4; vs += 4;
+        } else {                                /* next two rows, back to the left */
+            dst += dpitch * 2 - 32;
+            ys += ypitch * 2 - 8;
+            us += uvpitch - 4;
+            vs += uvpitch - 4;
+        }
+    }
+    /* r2 is only the packing scratch: the last value it held */
+    r2 = xmv_pack(x0.f[0], x0.f[1], k.m4);
+    r2 = MMX_PSLLQ(r2, 8u);
+    mm0 = r0; mm1 = r1; mm2 = r2; mm3 = r3;
+    xmm0 = x0; xmm1 = x1; xmm2 = x2; xmm3 = x3;
+    eax = 0;
+    ecx = us;
+    edx = vs;
+    g_ebp = g_seh_ebp = esp - 4;                /* as its push ebp / mov ebp, esp left them */
+    esp += 4 + 28;                              /* return address, ret 28 */
+}
+
+void sub_002CD892(void)
+{
+    static int mode = -1;                       /* 0 lifted, 1 native, 2 both + compare */
+
+    if (__builtin_expect(mode < 0, 0)) {
+        const char *e = getenv("RECOMP_NATIVE"), *k = getenv("RECOMP_NATIVE_CHECK");
+        mode = (e && *e == '0') ? 0 : (k && *k == '1') ? 2 : 1;
+    }
+    if (mode == 1) {
+        xmv_yuv_native();
+        return;
+    }
+    if (mode == 0) {
+        sub_002CD892_gen();
+        return;
+    }
+    {
+        static unsigned long calls, bad;
+        static uint8_t want[16][64];
+        uint32_t sp = esp, dst = MEM32(esp + 4 + 20), dpitch = MEM32(esp + 4 + 24);
+        uint32_t r_eax, r_ecx, r_edx, r_esp, row;
+        uint64_t r_mm[4];
+        RecompXmm r_x[4];
+
+        sub_002CD892_gen();
+        for (row = 0; row < 16; row++)
+            memcpy(want[row], (const void *)XBOX_PTR(dst + row * dpitch), 64);
+        r_eax = eax; r_ecx = ecx; r_edx = edx; r_esp = esp;
+        r_mm[0] = mm0.q; r_mm[1] = mm1.q; r_mm[2] = mm2.q; r_mm[3] = mm3.q;
+        r_x[0] = xmm0; r_x[1] = xmm1; r_x[2] = xmm2; r_x[3] = xmm3;
+        /* the lifted run clobbered the scratch registers the native one reads
+         * as its starting values; only lanes neither reads before writing */
+        esp = sp;
+        ecx = MEM32(sp + 4 + 4);
+        edx = MEM32(sp + 4 + 8);
+        xmv_yuv_native();
+        calls++;
+        for (row = 0; row < 16; row++)
+            if (memcmp(want[row], (const void *)XBOX_PTR(dst + row * dpitch), 64))
+                break;
+        if ((row < 16 || eax != r_eax || ecx != r_ecx || edx != r_edx || esp != r_esp
+             || mm0.q != r_mm[0] || mm1.q != r_mm[1] || mm2.q != r_mm[2] || mm3.q != r_mm[3]
+             || memcmp(&xmm0, &r_x[0], 16) || memcmp(&xmm1, &r_x[1], 16)
+             || memcmp(&xmm2, &r_x[2], 16) || memcmp(&xmm3, &r_x[3], 16)) && bad++ < 20)
+            fprintf(stderr, "[native] sub_002CD892 mismatch at dst %08X: row %u, regs "
+                    "eax %d ecx %d edx %d esp %d mm %d%d%d%d xmm %d%d%d%d\n", dst, row,
+                    eax != r_eax, ecx != r_ecx, edx != r_edx, esp != r_esp,
+                    mm0.q != r_mm[0], mm1.q != r_mm[1], mm2.q != r_mm[2], mm3.q != r_mm[3],
+                    !!memcmp(&xmm0, &r_x[0], 16), !!memcmp(&xmm1, &r_x[1], 16),
+                    !!memcmp(&xmm2, &r_x[2], 16), !!memcmp(&xmm3, &r_x[3], 16));
+        if ((calls & 0xFFFF) == 0)
+            fprintf(stderr, "[native] sub_002CD892: %lu calls, %lu mismatches\n", calls, bad);
+    }
+}
+
+
 /* ── DirectSound DSP command post (0x002F7EC2) ───────────────
  *
  * thiscall, ecx = the DSP-side object. Copies a command block into the GP

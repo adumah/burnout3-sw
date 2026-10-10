@@ -495,7 +495,24 @@ void recomp_trace_esp(const char *name, const char *tag);
  * uintptr_t cast preserves the overflow bits, landing us 4GB+ past
  * our mapping and causing access violations.
  */
+/* RECOMP_FOLD_TILED (default on Switch): every access folds the tiled
+ * aperture 0xF0000000-0xF7FFFFFF onto the contiguous window, as the
+ * device-aware accessors below do. Horizon cannot map the aperture, and a
+ * D3D8LTCG title has D3D inlined all through game code: Burnout 3's
+ * LockRect (0x3524D0) hands out pBits = surface | 0xF0000000 and game code
+ * (0x40B90) clears render targets through it. A few ALU ops per access. */
+#if !defined(RECOMP_FOLD_TILED) && defined(__SWITCH__)
+#define RECOMP_FOLD_TILED 1
+#endif
+#if defined(RECOMP_FOLD_TILED) && RECOMP_FOLD_TILED
+static inline uint32_t recomp_fold_tiled(uint32_t a)
+{
+    return a - 0xF0000000u < 0x08000000u ? (0x80000000u | (a & 0x03FFFFFFu)) : a;
+}
+#define XBOX_PTR(addr) ((uintptr_t)recomp_fold_tiled((uint32_t)(addr)) + g_xbox_mem_offset)
+#else
 #define XBOX_PTR(addr) ((uintptr_t)(uint32_t)(addr) + g_xbox_mem_offset)
+#endif
 
 /* Guest RAM accesses are volatile by default: a poll loop that re-reads a
  * flag another thread (or the runtime) writes must not have its load hoisted.

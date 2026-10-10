@@ -9,7 +9,7 @@
  * Game data is the extracted disc (default.xbe, Data/, Tracks/, ...). Where it is
  * looked for:
  *   Windows/Linux: $NFSU2_GAME_DIR, else ./game
- *   Switch:        sdmc:/switch/nfscx/game
+ *   Switch:        sdmc:/switch/b3x/game
  */
 
 #ifdef _WIN32
@@ -70,8 +70,8 @@ extern void xbox_path_init(const char *game_dir, const char *save_dir);
 
 
 #if defined(__SWITCH__)
-#  define NFSU2_DEFAULT_GAME_DIR "sdmc:/switch/nfscx/game"
-#  define NFSU2_DEFAULT_SAVE_DIR "sdmc:/switch/nfscx/save"
+#  define NFSU2_DEFAULT_GAME_DIR "sdmc:/switch/b3x/game"
+#  define NFSU2_DEFAULT_SAVE_DIR "sdmc:/switch/b3x/save"
 #else
 #  define NFSU2_DEFAULT_GAME_DIR "game"
 #  define NFSU2_DEFAULT_SAVE_DIR NULL
@@ -325,7 +325,7 @@ static int game_main(void)
 #endif
 #if defined(__SWITCH__)
     /* Every periodic log line flushes to the SD card; keep the log to what
-     * matters on a console. RECOMP_QUIET=0 in nfscx_env.txt brings it back. */
+     * matters on a console. RECOMP_QUIET=0 in b3x_env.txt brings it back. */
     setenv("RECOMP_QUIET", "1", 0);
 #endif
 
