@@ -1443,6 +1443,35 @@ int g_xbox_extvma_reserved = 0;
  * nothing breaks before the title is loaded. */
 uint32_t g_xbox_image_lo = 0;
 uint32_t g_xbox_image_hi = 0;
+
+/* Runtime data block (xbox_memory_layout.h). The legacy fixed addresses until
+ * the image is loaded and xbox_RtDataPlace() finds room above it. */
+uint32_t g_xbox_kernel_data_base = 0x00740000;
+uint32_t g_xbox_rtdata_prcb       = 0x00761000;
+uint32_t g_xbox_rtdata_tls        = 0x00760000;
+uint32_t g_xbox_rtdata_rwdata     = 0x00700000;
+uint32_t g_xbox_rtdata_tls_block  = 0x00770000;
+uint32_t g_xbox_rtdata_tls_thread = 0x00770200;
+
+static void xbox_RtDataPlace(void)
+{
+    uint32_t base = (g_xbox_image_hi + 0xFFFu) & ~0xFFFu;
+
+    if (!g_xbox_image_hi || base + XBOX_RTDATA_SIZE > XBOX_STACK_BASE) {
+        fprintf(stderr, "  [MEM] no room for the runtime data block between the image"
+                " (end 0x%08X) and the stack; legacy fixed addresses\n", g_xbox_image_hi);
+        return;
+    }
+    g_xbox_kernel_data_base  = base + XBOX_RTDATA_KDATA;
+    g_xbox_rtdata_prcb       = base + XBOX_RTDATA_PRCB;
+    g_xbox_rtdata_tls        = base + XBOX_RTDATA_TLS;
+    g_xbox_rtdata_tls_thread = base + XBOX_RTDATA_TLS_THREAD;
+    g_xbox_rtdata_tls_block  = base + XBOX_RTDATA_TLS_BLOCK;
+    g_xbox_rtdata_rwdata     = base + XBOX_RTDATA_RWDATA;
+    memset((void *)((uintptr_t)base + g_memory_offset), 0, XBOX_RTDATA_SIZE);
+    fprintf(stderr, "  [MEM] runtime data block at 0x%08X-0x%08X (image ends 0x%08X)\n",
+            base, base + XBOX_RTDATA_SIZE, g_xbox_image_hi);
+}
 uint32_t g_xbox_code_lo = 0;
 uint32_t g_xbox_code_hi = 0;
 
@@ -2548,7 +2577,8 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
          * only worked while page zero was mapped. Pointing at real zeroed
          * memory says the same thing to the title and survives that page being
          * unmapped, which is what makes a genuine null dereference visible. */
-        #define FAKE_PRCB_VA 0x00761000  /* zeroed KPCR Prcb stand-in */
+        xbox_RtDataPlace();
+        #define FAKE_PRCB_VA g_xbox_rtdata_prcb  /* zeroed KPCR Prcb stand-in */
         memset(XBOX_VA(FAKE_PRCB_VA), 0, 0x400);
         MEM32_INIT(XBOX_FS_BASE + 0x20, FAKE_PRCB_VA);
         #undef FAKE_PRCB_VA
@@ -2559,8 +2589,8 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
          * to its data area. We allocate a fake structure at 0x00760000
          * (in the BSS area) and a data buffer at 0x00700000.
          */
-        #define FAKE_TLS_VA     0x00760000  /* Fake TLS structure (in BSS) */
-        #define FAKE_RWDATA_VA  0x00700000  /* RW engine data area (in BSS) */
+        #define FAKE_TLS_VA     g_xbox_rtdata_tls     /* Fake TLS structure */
+        #define FAKE_RWDATA_VA  g_xbox_rtdata_rwdata  /* RW engine data area */
 
         MEM32_INIT(XBOX_FS_BASE + 0x28, FAKE_TLS_VA);
         /* TLS[0x28] = pointer to RW data area */
@@ -2594,8 +2624,8 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
          * Every guest thread therefore shares LastError. Give this a per-thread
          * allocation when a title is observed to care.
          */
-        #define FAKE_TLS_BLOCK_VA  0x00770000  /* image TLS data          */
-        #define FAKE_TLS_THREAD_VA 0x00770200  /* what slot 0 points at   */
+        #define FAKE_TLS_BLOCK_VA  g_xbox_rtdata_tls_block   /* image TLS data        */
+        #define FAKE_TLS_THREAD_VA g_xbox_rtdata_tls_thread  /* what slot 0 points at */
         {
             DWORD tls_dir_va = *(const DWORD *)(xbe + XBE_TLS_ADDR_OFFSET);
 
@@ -2938,7 +2968,10 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
         uint64_t tiled_lo = XBOX_TILED_BASE;
         uint64_t tiled_hi = tiled_lo + xbox_TiledApertureSize();
 
-        for (int m = 0; m < XBOX_NUM_MIRRORS; m++) {
+        /* RECOMP_NO_MIRRORS=1: map none, as on a host that cannot alias
+         * memory (Horizon) -- for reproducing its behaviour on a desktop. */
+        int no_mirrors = getenv("RECOMP_NO_MIRRORS") && *getenv("RECOMP_NO_MIRRORS") == '1';
+        for (int m = 0; m < (no_mirrors ? 0 : XBOX_NUM_MIRRORS); m++) {
             uintptr_t mirror_base = (uintptr_t)g_memory_base +
                                     (uintptr_t)(m + 1) * g_memory_size;
             uint64_t guest_lo = (uint64_t)(m + 1) * g_memory_size;

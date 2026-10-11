@@ -396,6 +396,12 @@ typedef VOID (__stdcall *PXBOX_SYSTEM_ROUTINE)(PVOID StartContext);
  * MmClaimGpuInstanceMemory reports GPU instance memory at its top. Shared so
  * the layout and the bridges cannot disagree about where it is. */
 #define XBOX_CONTIG_BASE 0x80000000u
+/* Bus address of low RAM that would collide with the contiguous arena: a VA
+ * the title allocated in ordinary RAM (not the window) whose number falls in
+ * the arena's physical range gets this bit from MmGetPhysicalAddress, so a
+ * device can tell the two apart (xbox_devbus.c). Like the upper half of a
+ * 128 MB development kit's RAM. */
+#define XBOX_PHYS_LOWVA_TAG 0x04000000u
 #define XBOX_CONTIG_SIZE (64u * 1024u * 1024u)
 
 /* Default GPU instance size, used when a caller asks to claim everything. */

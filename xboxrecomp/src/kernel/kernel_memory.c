@@ -163,6 +163,8 @@ VOID __stdcall xbox_MmUnmapIoSpace(PVOID BaseAddress, ULONG NumberOfBytes)
         VirtualFree(BaseAddress, 0, MEM_RELEASE);
 }
 
+extern int xbox_ContiguousIsPhysical(uint32_t phys);
+
 ULONG_PTR __stdcall xbox_MmGetPhysicalAddress(PVOID BaseAddress)
 {
     /*
@@ -179,9 +181,17 @@ ULONG_PTR __stdcall xbox_MmGetPhysicalAddress(PVOID BaseAddress)
      * nothing naming this function.
      */
     uint32_t va = (uint32_t)(uintptr_t)BaseAddress;
-    return (ULONG_PTR)((va >= XBOX_CONTIG_BASE &&
-                        (uint64_t)va < (uint64_t)XBOX_CONTIG_BASE + XBOX_CONTIG_SIZE)
-                     ? va - XBOX_CONTIG_BASE : va);
+    if (va >= XBOX_CONTIG_BASE &&
+            (uint64_t)va < (uint64_t)XBOX_CONTIG_BASE + XBOX_CONTIG_SIZE)
+        return (ULONG_PTR)(va - XBOX_CONTIG_BASE);
+    /* Ordinary RAM whose VA is also a physical address the arena handed out:
+     * passed through, a device would read the window instead. Burnout 3 loads
+     * its engine sounds into heap memory at 0x01A6xxxx, the arena owns
+     * physical 0x01A6xxxx too, and the APU played the arena's zeros -- no
+     * engine sound. Tagged, the device reads the VA (xbox_devbus.c). */
+    if (va < XBOX_PHYS_LOWVA_TAG && xbox_ContiguousIsPhysical(va))
+        return (ULONG_PTR)(va | XBOX_PHYS_LOWVA_TAG);
+    return (ULONG_PTR)va;
 }
 
 VOID __stdcall xbox_MmPersistContiguousMemory(PVOID BaseAddress, ULONG NumberOfBytes, BOOLEAN Persist)

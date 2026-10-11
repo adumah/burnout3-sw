@@ -100,6 +100,51 @@ needed). This port uses the NFS toolkit fork instead (GPU renderers, Switch).
   the highlight. vk_clear now draws a masked triangle for those
   (clear_pipe). GL was right (glClear honours the mask) but has no cube
   maps, so its paint shows no reflection.
+- **No engine sound (fixed, toolkit):** the engine loops (16 voices,
+  v04E-v05D, from pveh/*/CARn.hwd) are loaded into heap memory at low VAs
+  (0x01A6xxxx). MmGetPhysicalAddress passed those through unchanged, the
+  same numbers as contiguous-arena physical addresses, so the APU read the
+  arena window (zeros). Such ambiguous low VAs now get bus address
+  VA | 0x04000000 (XBOX_PHYS_LOWVA_TAG); apu_phys, dma_resolve and OHCI
+  bus_to_va map it back. `RECOMP_APU_VOICES=1` lists every voice (format,
+  bins, buffer, peak) every 5 s.
+- **Saves "Unusable" after playing (fixed, toolkit):** profiles carry a
+  dword-sum checksum at +0xE810 and an XCalculateSignature (non-roamable)
+  over 0xE9EC bytes, keyed from XboxHDKey/XboxSignatureKey (zeros). The
+  kernel data exports lived at fixed 0x00740000, inside Burnout's .data
+  (0x3B2360-0x76B93C); racing overwrote the keys, so later saves were signed
+  with garbage. Kernel data, fake PRCB/TLS and the TLS block now sit in a
+  runtime block placed above the image (0x00779000 here, xbox_RtDataPlace).
+  Broken saves keep valid data: re-signed copies are in switch_sd/repaired.
+  `RECOMP_NO_MIRRORS=1` maps no RAM mirrors (as on Switch).
+- **Slow-motion races below 60 fps (fixed, src/recomp_manual.c):** the
+  main loop (0x00016ADC) runs N fixed 1/60 s steps a frame (tick counter
+  0x4A1EB4, clock constant 1/60 at 0x49C120); N = sub_001B58E0(min 1, max
+  4). Its state (0x4D5338) has a mode the game sets via 0x4D5390: 1 counts
+  real TSC ticks, 0 (races) always answers 1 -- the Xbox holds 60 fps. At
+  48 fps the race clock ran at 0.80x; on Switch 150 mph looked like 40. The
+  override runs mode 0 as mode 1: game time 1.00x at any frame rate.
+  B3_FRAME_LOCK=1 restores one step per frame. /root/b3x/clockscan.py PID
+  finds float clocks in guest RAM and prints their rate vs wall time.
+- **Picture options in Driver Details > Settings > Gameplay (2026-10-11,
+  Vulkan build):** Resolution Scale 1x/1.5x/2x/2.5x, Anti-Aliasing (FXAA)
+  Off/On, Anisotropic Filtering Off/2x..16x, as NFSU2's Video rows. Renderer
+  side ported from nfsu2-xbox 48b1b27 + 77b9a83 (nv2a_vk_scale_pct and
+  rescale_surfaces, mips, aniso, FXAA, square pixels; gl_vsh u_snap_y).
+  Screen: sub_00084E20 builds rows into the screen object 0x55AC44 (+6 row
+  count, 0x14-byte rows from +8: label pointer, value-id list, count, 4);
+  sub_000EF170 (wrapped) gets a 5-row copy for widget 0x550ACC; values via
+  sub_000EF600; input sub_00084F90 (wrapped): pad 0x4AE724 + 0x188 *
+  [0x4AED45], +0x10/+0x1C left/right, +0x28/+0x34 up/down; redraw
+  sub_000F0CB0. Text: Data/Globalus.bin string table at [[0x4D532C]+0xC]
+  (0xF91 UTF-16 entries), replaced by a longer copy with the new texts.
+  Saved in b3x_options.txt (sdmc:/switch/b3x/ or the working directory),
+  loaded at boot (main.c b3x_options_load).
+- **Race training video (TrD_*.xmv):** not skippable in the game. The
+  screen at 0x000151D0 opens it; frames are stepped by sub_00014C80 ->
+  sub_001C93D0; movie object at screen+0x1D0, +0x61 = end of file (set when
+  GetNextFrame returns 2-3), +0x63 = new frame. sub_000154A0 waits on
+  screen+0x231 (= movie+0x61). A skip would set that flag; not done.
 - **Debug tools added (toolkit):** `RECOMP_FRAME_TRACE=<flag file>` (pb_exec:
   one line per draw/clear/other-subchannel method of the next frame, with
   the CPU-transformed first vertices; touch the file again for another
@@ -118,6 +163,8 @@ needed). This port uses the NFS toolkit fork instead (GPU renderers, Switch).
   save and load, menus, training videos; races render the full 3D world
   with motion blur and drive (35-38 fps GL, ~25 fps Vulkan on lavapipe);
   car select shows the lit garage and the car with its reflections.
+  Engine sound, saving after a race and race speed below 60 fps fixed
+  2026-10-11.
 - Switch: `b3x.nro` (GL) and `b3x-vulkan.nro` built and staged in
   `switch_sd/switch/b3x/` with the disc (2026-10-08); not run on Eden or
   hardware yet. Icon cropped from the title screen; loader logo still NFSU2's.

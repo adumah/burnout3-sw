@@ -1375,12 +1375,34 @@ static float g_vp_mix_peak;
  * fetched non-silent samples, with the registers of one of each kind. */
 static int   g_tr_on = -1, g_tr_unpaused, g_tr_sounding;
 static char  g_tr_quiet[200], g_tr_loud[200];
+/* RECOMP_APU_VOICES=1: also every voice seen in the last 5 s, loudest peak
+ * (without RECOMP_APU_TRACE's register-write logging). */
+static struct { float peak; uint32_t fmt, vbin, frames, ba, ebo, cbo, lbo, pa; } g_tr_v[MCPX_HW_MAX_VOICES];
+
+static int apu_trace_level(void)
+{
+    if (g_tr_on < 0) {
+        g_tr_on = getenv("RECOMP_APU_VOICES") ? 2 : getenv("RECOMP_APU_TRACE") ? 1 : 0;
+    }
+    return g_tr_on;
+}
 
 void apu_vp_trace_voice(MCPXAPUState *d, uint16_t v, float peak, float ea)
 {
     char *dst;
-    if (g_tr_on < 0) g_tr_on = getenv("RECOMP_APU_TRACE") != NULL;
-    if (!g_tr_on) return;
+    if (!apu_trace_level()) return;
+    if (g_tr_on == 2 && v < MCPX_HW_MAX_VOICES) {
+        if (peak > g_tr_v[v].peak) g_tr_v[v].peak = peak;
+        g_tr_v[v].fmt = voice_get_mask(d, v, NV_PAVS_VOICE_CFG_FMT, 0xFFFFFFFF);
+        g_tr_v[v].vbin = voice_get_mask(d, v, NV_PAVS_VOICE_CFG_VBIN, 0xFFFFFFFF);
+        g_tr_v[v].frames++;
+        g_tr_v[v].ba = voice_get_mask(d, v, NV_PAVS_VOICE_CUR_PSL_START, 0xFFFFFFFF);
+        g_tr_v[v].ebo = voice_get_mask(d, v, NV_PAVS_VOICE_PAR_NEXT, NV_PAVS_VOICE_PAR_NEXT_EBO);
+        g_tr_v[v].cbo = voice_get_mask(d, v, NV_PAVS_VOICE_PAR_OFFSET, NV_PAVS_VOICE_PAR_OFFSET_CBO);
+        g_tr_v[v].lbo = voice_get_mask(d, v, NV_PAVS_VOICE_CUR_PSH_SAMPLE, NV_PAVS_VOICE_CUR_PSH_SAMPLE_LBO);
+        g_tr_v[v].pa = (uint32_t)get_data_ptr(d->regs[NV_PAPU_VPSGEADDR], 0xFFFFFFFF,
+                                              g_tr_v[v].ba & NV_PAVS_VOICE_CUR_PSL_START_BA);
+    }
     g_tr_unpaused++;
     if (peak > 0.0f) g_tr_sounding++;
     dst = peak > 0.0f ? g_tr_loud : g_tr_quiet;
@@ -1407,6 +1429,19 @@ static void apu_vp_trace_second(void)
             g_tr_unpaused, g_tr_sounding, g_vp_mix_peak, g_tr_quiet, g_tr_loud);
     g_tr_unpaused = g_tr_sounding = 0;
     g_tr_quiet[0] = g_tr_loud[0] = 0;
+    if (g_tr_on == 2) {
+        static int tick;
+        if (++tick % 5 == 0) {
+            int v;
+            for (v = 0; v < MCPX_HW_MAX_VOICES; v++)
+                if (g_tr_v[v].frames)
+                    fprintf(stderr, "[APU-V] v%03X frames %u peak %.3f fmt %08X vbin %08X ba %08X pa %08X lbo %X ebo %X cbo %X%s\n",
+                            v, g_tr_v[v].frames, g_tr_v[v].peak, g_tr_v[v].fmt, g_tr_v[v].vbin,
+                            g_tr_v[v].ba, g_tr_v[v].pa, g_tr_v[v].lbo, g_tr_v[v].ebo, g_tr_v[v].cbo,
+                            (g_tr_v[v].fmt & NV_PAVS_VOICE_CFG_FMT_MULTIPASS) ? " MP" : "");
+            memset(g_tr_v, 0, sizeof g_tr_v);
+        }
+    }
 }
 void apu_vp_get_stats(int *voices, float *mix_peak)
 {

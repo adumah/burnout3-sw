@@ -597,6 +597,337 @@ void sub_002CD892(void)
 }
 
 
+/* ── Simulation steps per frame (0x001B58E0) ─────────────────
+ *
+ * thiscall-like: esi = timing state, two stack args (min, max steps; the
+ * main loop passes 1, 4), ret 8, eax = how many 1/60 s simulation steps
+ * the main loop (0x00016ADC) runs this frame. The state's first dword is a
+ * mode the game sets (0x4D5390 = state of the game object at 0x4A71A0):
+ * 1 counts the TSC ticks that really elapsed and clamps them to [min, max];
+ * 0, which races use, always answers min -- one step per rendered frame,
+ * because the Xbox holds 60 fps there. Below 60 fps that is slow motion:
+ * at 48 fps the race clock ran at 0.80 of real time, and on the Switch the
+ * speedometer read 150 mph while the world crawled past. Mode 0 is run as
+ * mode 1, so the simulation keeps real time at any frame rate (the time
+ * accounting is the same in both; only the answer differs).
+ * B3_FRAME_LOCK=1: the original one step per frame. */
+extern void sub_001B58E0_gen(void);
+
+void sub_001B58E0(void)
+{
+    static int lock = -1;
+    uint32_t st = esi;
+
+    if (lock < 0) {
+        const char *e = getenv("B3_FRAME_LOCK");
+        lock = e && *e == '1';
+    }
+    if (!lock && MEM32(st) == 0) {
+        MEM32(st) = 1;
+        sub_001B58E0_gen();
+        MEM32(st) = 0;
+    } else {
+        sub_001B58E0_gen();
+    }
+}
+
+/* ── Driver Details > Settings > Gameplay: picture options ────
+ *
+ * Three rows under Takedown Camera / Crash Mode Impact Time, as NFSU2's
+ * Options -> Video: Resolution Scale 1x..2.5x (nv2a_vk_scale_pct, applied
+ * at the next flip), Anti-Aliasing Off/On (FXAA at present) and
+ * Anisotropic Filtering Off/2x..16x. Vulkan build only. Kept in
+ * b3x_options.txt (sdmc:/switch/b3x/ on the Switch, the working directory
+ * elsewhere): scale=, fxaa=, aniso=; loaded at boot (main.c).
+ *
+ * How the screen works (all hand-built, no data file):
+ *   sub_00084E20  builds it: screen object 0x55AC44 (+4 cursor u16, +6 row
+ *                 count u16, rows of 0x14 bytes from +8: label pointer,
+ *                 value-list pointer (u32 string ids), value count, 4),
+ *                 then sub_000EF170 makes the list widget 0x550ACC, which
+ *                 keeps pointers to the header (eax) and the rows (arg),
+ *                 and sub_000EF600(widget, row, value) sets each value.
+ *   sub_00084F90  input, ecx = the screen: pad block 0x4AE724 + 0x188 *
+ *                 [0x4AED45], +0x28/+0x34 up/down, +0x10/+0x1C left/right;
+ *                 rows 0/1 flip their byte (0x4AE1DB/DC) and redraw with
+ *                 sub_000F0CB0(edx = widget, ecx = row, value); any other
+ *                 row just plays the click.
+ * The screen object has room for two rows (the next screen starts at
+ * 0x55AC80), so the widget gets a five-row copy in guest memory instead.
+ * Value texts are string ids: the string table (pointer list at
+ * [[0x4D532C] + 0xC], 0xF91 entries) is replaced by a longer copy with the
+ * new texts appended; "Off"/"On" are the game's own 0x18B/0x18A. */
+#ifdef __SWITCH__
+#  define B3X_OPTIONS_FILE "sdmc:/switch/b3x/b3x_options.txt"
+#else
+#  define B3X_OPTIONS_FILE "b3x_options.txt"
+#endif
+#define GP_SCREEN     0x0055AC44u
+#define GP_WIDGET     0x00550ACCu
+#define GP_ROW_SIZE   0x14u
+#define STR_TABLE_PTR 0x004D532Cu
+#define STR_OFF       0x18Bu
+#define STR_ON        0x18Au
+
+#ifdef NFSU2_VULKAN
+extern volatile int nv2a_vk_scale_pct;
+extern volatile int nv2a_vk_fxaa;
+extern volatile int nv2a_vk_aniso;
+#endif
+extern uint32_t xbox_ContiguousAlloc(uint32_t size, uint32_t alignment);
+
+static const int s_scale_pct[] = { 100, 150, 200, 250 };
+static const int s_aniso_lvl[] = { 1, 2, 4, 8, 16 };
+static int s_scale_idx = 1;             /* 1.5x */
+static int s_scale_saved;               /* b3x_options.txt had scale= */
+static int s_fxaa = 1;
+static int s_aniso_idx = 4;             /* 16x */
+
+static void opt_apply(void)
+{
+#ifdef NFSU2_VULKAN
+    if (s_scale_saved)
+        nv2a_vk_scale_pct = s_scale_pct[s_scale_idx];
+    nv2a_vk_fxaa = s_fxaa;
+    nv2a_vk_aniso = s_aniso_lvl[s_aniso_idx];
+#endif
+}
+
+static void opt_log(void)
+{
+    fprintf(stderr, "[options] resolution scale %d%%%s, anti-aliasing %s, anisotropic %dx\n",
+            s_scale_pct[s_scale_idx], s_scale_saved ? "" : " (RECOMP_GL_SCALE)",
+            s_fxaa ? "on" : "off", s_aniso_lvl[s_aniso_idx]);
+}
+
+void b3x_options_load(void)
+{
+    char line[128];
+    FILE *f = fopen(B3X_OPTIONS_FILE, "r");
+    int i;
+
+    if (f) {
+        while (fgets(line, sizeof line, f)) {
+            if (!strncmp(line, "fxaa=", 5))
+                s_fxaa = line[5] != '0';
+            else if (!strncmp(line, "aniso=", 6)) {
+                int a = atoi(line + 6);
+                for (i = 0; i < 5; i++)
+                    if (s_aniso_lvl[i] == a)
+                        s_aniso_idx = i;
+            } else if (!strncmp(line, "scale=", 6)) {
+                int pct = atoi(line + 6);
+                for (i = 0; i < 4; i++)
+                    if (s_scale_pct[i] == pct) {
+                        s_scale_idx = i;
+                        s_scale_saved = 1;
+                    }
+            }
+        }
+        fclose(f);
+    }
+    if (!s_scale_saved) {
+        /* RECOMP_GL_SCALE rules until the row is changed; the row shows the
+         * nearest step. */
+        const char *e = getenv("RECOMP_GL_SCALE");
+        double k = e && *e ? strtod(e, NULL) : 1.0, best = 1e9;
+        for (i = 0; i < 4; i++) {
+            double d = fabs(k * 100.0 - s_scale_pct[i]);
+            if (d < best) { best = d; s_scale_idx = i; }
+        }
+    }
+    opt_apply();
+    opt_log();
+}
+
+static void opt_save(void)
+{
+    FILE *f = fopen(B3X_OPTIONS_FILE, "w");
+    if (!f) {
+        fprintf(stderr, "[options] cannot write " B3X_OPTIONS_FILE "\n");
+        return;
+    }
+    if (s_scale_saved)
+        fprintf(f, "scale=%d\n", s_scale_pct[s_scale_idx]);
+    fprintf(f, "fxaa=%d\naniso=%d\n", s_fxaa, s_aniso_lvl[s_aniso_idx]);
+    fclose(f);
+}
+
+/* The rows exist in the Vulkan build only (the GL renderer has no such
+ * switches); the wrappers below are always built, as the lifter takes
+ * every function defined in this file as overridden. */
+#ifdef NFSU2_VULKAN
+#  define B3X_GP_ROWS 1
+#else
+#  define B3X_GP_ROWS 0
+#endif
+
+/* New texts: labels (used as pointers) and values (used as string ids). */
+enum { T_SCALE, T_AA, T_ANISO, T_1X, T_15X, T_2X, T_25X, T_4X, T_8X, T_16X, T_COUNT };
+static const char *const s_texts[T_COUNT] = {
+    "RESOLUTION SCALE", "ANTI-ALIASING", "ANISOTROPIC FILTERING",
+    "1x", "1.5x", "2x", "2.5x", "4x", "8x", "16x",
+};
+static uint32_t s_text_va[T_COUNT];     /* UTF-16 copies in guest memory */
+static uint32_t s_text_id[T_COUNT];     /* their ids in the extended table */
+static uint32_t s_ext_list;             /* our pointer list, 0 = not built */
+static uint32_t s_ext_count;
+static uint32_t s_rows_va;              /* five rows */
+static uint32_t s_vals_va;              /* value-id lists */
+
+typedef struct { int text; uint32_t list_off; int n; int *value; } GpRow;
+static GpRow s_gp[3] = {
+    { T_SCALE, 0x00, 4, &s_scale_idx },
+    { T_AA,    0x10, 2, &s_fxaa },
+    { T_ANISO, 0x18, 5, &s_aniso_idx },
+};
+
+/* The string table with our texts appended; rebuilt if the game reloads
+ * its own (its pointer list then is no longer ours). */
+static int gp_strings(void)
+{
+    uint32_t tab = MEM32(STR_TABLE_PTR), list, n, i;
+
+    if (!tab)
+        return 0;
+    list = MEM32(tab + 0xC);
+    if (s_ext_list && list == s_ext_list)
+        return 1;
+    n = MEM32(tab + 8);
+    if (!n || n > 0x10000)
+        return 0;
+    if (!s_text_va[0])
+        for (i = 0; i < T_COUNT; i++) {
+            size_t len = strlen(s_texts[i]), k;
+            uint32_t va = xbox_ContiguousAlloc((uint32_t)(len + 1) * 2, 4);
+            if (!va)
+                return 0;
+            for (k = 0; k <= len; k++)
+                MEM16(va + (uint32_t)k * 2) = (uint8_t)s_texts[i][k];
+            s_text_va[i] = va;
+        }
+    s_ext_list = xbox_ContiguousAlloc((n + T_COUNT) * 4, 16);
+    if (!s_ext_list)
+        return 0;
+    for (i = 0; i < n; i++)
+        MEM32(s_ext_list + i * 4) = MEM32(list + i * 4);
+    for (i = 0; i < T_COUNT; i++) {
+        s_text_id[i] = n + i;
+        MEM32(s_ext_list + (n + i) * 4) = s_text_va[i];
+    }
+    s_ext_count = n + T_COUNT;
+    MEM32(tab + 0xC) = s_ext_list;
+    MEM32(tab + 8) = s_ext_count;
+
+    /* Value lists: scale 1x..2.5x at +0, Off/On at +0x10, aniso at +0x18. */
+    if (!s_vals_va)
+        s_vals_va = xbox_ContiguousAlloc(0x30, 16);
+    if (!s_vals_va)
+        return 0;
+    MEM32(s_vals_va + 0x00) = s_text_id[T_1X];
+    MEM32(s_vals_va + 0x04) = s_text_id[T_15X];
+    MEM32(s_vals_va + 0x08) = s_text_id[T_2X];
+    MEM32(s_vals_va + 0x0C) = s_text_id[T_25X];
+    MEM32(s_vals_va + 0x10) = STR_OFF;
+    MEM32(s_vals_va + 0x14) = STR_ON;
+    MEM32(s_vals_va + 0x18) = STR_OFF;
+    MEM32(s_vals_va + 0x1C) = s_text_id[T_2X];
+    MEM32(s_vals_va + 0x20) = s_text_id[T_4X];
+    MEM32(s_vals_va + 0x24) = s_text_id[T_8X];
+    MEM32(s_vals_va + 0x28) = s_text_id[T_16X];
+    return 1;
+}
+
+extern void sub_000EF170_gen(void);
+extern void sub_00084E20_gen(void);
+extern void sub_00084F90_gen(void);
+extern void sub_000EF600(void);
+extern void sub_000F0CB0(void);
+
+/* List widget: for the Gameplay screen, five rows instead of its two. */
+void sub_000EF170(void)
+{
+    uint32_t rows = MEM32(esp + 4), i;
+
+    if (B3X_GP_ROWS && esi == GP_WIDGET && rows == GP_SCREEN + 8 && eax == GP_SCREEN + 4
+            && gp_strings()) {
+        if (!s_rows_va)
+            s_rows_va = xbox_ContiguousAlloc(5 * GP_ROW_SIZE, 16);
+        if (s_rows_va) {
+            for (i = 0; i < 2 * GP_ROW_SIZE; i += 4)
+                MEM32(s_rows_va + i) = MEM32(rows + i);
+            for (i = 0; i < 3; i++) {
+                uint32_t r = s_rows_va + (2 + i) * GP_ROW_SIZE;
+                MEM32(r + 0x0) = s_text_va[s_gp[i].text];
+                MEM32(r + 0x4) = 0;
+                MEM32(r + 0x8) = s_vals_va + s_gp[i].list_off;
+                MEM8(r + 0xC) = (uint8_t)s_gp[i].n;
+                MEM8(r + 0xD) = 4;
+                MEM8(r + 0xE) = 0;
+                MEM8(r + 0xF) = 0;
+                MEM32(r + 0x10) = 0;
+            }
+            MEM16(GP_SCREEN + 6) = 5;
+            MEM32(esp + 4) = s_rows_va;
+        }
+    }
+    sub_000EF170_gen();
+}
+
+/* Set row `row` of the Gameplay list to `value`, as the builder does. */
+static void gp_set(uint32_t row, uint32_t value)
+{
+    uint32_t r = s_rows_va + row * GP_ROW_SIZE;
+    xmm5.f[0] = MEMF((uint32_t)MEM8(r + 0xD) * 4 + 0x00572104u);
+    PUSH32(esp, value);
+    PUSH32(esp, row);
+    PUSH32(esp, GP_WIDGET);
+    PUSH32(esp, 0x00084F37u); RECOMP_ABI_CALL(0x000EF600u, sub_000EF600);
+}
+
+void sub_00084E20(void)
+{
+    int i;
+
+    sub_00084E20_gen();
+    if (s_rows_va && MEM16(GP_SCREEN + 6) == 5 && MEM32(GP_WIDGET + 0x10) == s_rows_va)
+        for (i = 0; i < 3; i++)
+            gp_set(2 + i, (uint32_t)*s_gp[i].value);
+}
+
+/* Left/right on our rows: step the value, redraw, apply, save. The original
+ * then plays its click for any row past the second. */
+void sub_00084F90(void)
+{
+    uint32_t screen = ecx;
+
+    if (screen == GP_SCREEN && MEM32(0x00557A64u) == 5 && s_rows_va
+            && MEM16(screen + 6) == 5) {
+        uint32_t pad = 0x004AE724u + 0x188u * (uint32_t)(int32_t)(int8_t)MEM8(0x004AED45u);
+        uint32_t row = MEM16(screen + 4);
+        int left = MEM16(pad + 0x10) != 0, right = MEM16(pad + 0x1C) != 0;
+        if (row >= 2 && row < 5 && (left || right)
+                && !MEM16(pad + 0x28) && !MEM16(pad + 0x34)) {
+            GpRow *g = &s_gp[row - 2];
+            int v = *g->value + (right ? 1 : -1);
+            if (v < 0) v = g->n - 1;
+            if (v >= g->n) v = 0;
+            *g->value = v;
+            if (g->value == &s_scale_idx)
+                s_scale_saved = 1;
+            opt_apply();
+            opt_save();
+            opt_log();
+            ecx = row;
+            edx = GP_WIDGET;
+            PUSH32(esp, (uint32_t)v);
+            PUSH32(esp, 0x0008513Du); RECOMP_ABI_CALL(0x000F0CB0u, sub_000F0CB0);
+            ecx = screen;
+        }
+    }
+    sub_00084F90_gen();
+}
+
 /* ── DirectSound DSP command post (0x002F7EC2) ───────────────
  *
  * thiscall, ecx = the DSP-side object. Copies a command block into the GP

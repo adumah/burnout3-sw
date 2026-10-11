@@ -277,9 +277,29 @@ void xbox_WatchInit(void);
 
 /** Base VA for kernel data exports (XboxHardwareInfo, XboxKrnlVersion, etc.)
  *  These are kernel exports that are DATA, not functions. The game reads
- *  their thunk entries and dereferences them to access the data. */
-#define XBOX_KERNEL_DATA_BASE   0x00740000
+ *  their thunk entries and dereferences them to access the data.
+ *
+ *  Placed at load time, with the loader's other stand-ins (fake PRCB, TLS),
+ *  in the runtime data block just above the image (xbox_RtDataPlace). It
+ *  used to be the fixed 0x00740000, which is inside Burnout 3's .data/.bss
+ *  (0x3B2360-0x76B93C): the game's own variables overwrote XboxHDKey and
+ *  XboxSignatureKey during a race, and every profile saved after that was
+ *  signed with garbage and came back "Unusable". */
+extern uint32_t g_xbox_kernel_data_base;
+#define XBOX_KERNEL_DATA_BASE   g_xbox_kernel_data_base
 #define XBOX_KERNEL_DATA_SIZE   4096   /* 4 KB - plenty for all data exports */
+
+/* The runtime data block: page-aligned above the loaded image, below the
+ * guest stack. Offsets of what lives in it. */
+#define XBOX_RTDATA_KDATA       0x0000  /* kernel data exports (4 KB) */
+#define XBOX_RTDATA_PRCB        0x1000  /* zeroed KPCR Prcb stand-in (1 KB) */
+#define XBOX_RTDATA_TLS         0x1400  /* fs:[0x28] engine TLS stand-in */
+#define XBOX_RTDATA_TLS_THREAD  0x1600  /* XBE TLS slot 0 target (64 B) */
+#define XBOX_RTDATA_TLS_BLOCK   0x2000  /* XBE TLS data block (up to 4 KB) */
+#define XBOX_RTDATA_RWDATA      0x3000  /* fs:[0x28]+0x28 data area (4 KB) */
+#define XBOX_RTDATA_SIZE        0x4000
+extern uint32_t g_xbox_rtdata_prcb, g_xbox_rtdata_tls, g_xbox_rtdata_rwdata,
+                g_xbox_rtdata_tls_block, g_xbox_rtdata_tls_thread;
 
 /* Offsets within the kernel data area */
 #define KDATA_HARDWARE_INFO     0x000  /* XBOX_HARDWARE_INFO (8 bytes) */

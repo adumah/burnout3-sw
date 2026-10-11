@@ -407,6 +407,10 @@ static int game_main(void)
     /* text patch: NFSU2 only */
     xbox_path_init(game_dir, NFSU2_DEFAULT_SAVE_DIR);
     xbox_kernel_bridge_init();
+    {
+        extern void b3x_options_load(void);   /* recomp_manual.c: Gameplay picture rows */
+        b3x_options_load();
+    }
 
     g_esp = XBOX_STACK_TOP;
 

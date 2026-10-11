@@ -4,6 +4,27 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [SemVer](https://semver.org/).
 
+## [0.1] - 2026-10-11
+
+First Switch/Linux release on the NFS toolkit fork.
+
+### Added
+- The 3D world: races, the car-select garage, motion blur and bloom (the
+  scene composite was an immediate-mode quad the executor dropped), fog.
+- Vulkan: reflection cube highlights (alpha-only clears), picture quality
+  from the NFSU2 port (mipmaps, anisotropic filtering, FXAA, resolution
+  scale).
+- Driver Details > Settings > Gameplay: Resolution Scale, Anti-Aliasing and
+  Anisotropic Filtering rows (Vulkan), saved in `b3x_options.txt`.
+- Races keep real time below 60 fps (time-based simulation steps;
+  `B3_FRAME_LOCK=1` for the original one step per frame).
+
+### Fixed
+- No engine sound: heap buffers whose numbers collided with contiguous
+  physical addresses were read from the wrong memory by the APU.
+- Profiles saved after racing came back "Unusable": the kernel's key
+  exports sat inside the game's own data and were overwritten.
+
 ## [Unreleased]
 
 The project now runs on the shared xboxrecomp runtime instead of its own fork,
