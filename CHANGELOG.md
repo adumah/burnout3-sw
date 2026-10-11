@@ -4,6 +4,14 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [SemVer](https://semver.org/).
 
+## [0.2] - 2026-10-11
+
+### Fixed
+- Particles: sparks, boost exhaust flames, light glows (traffic lights,
+  street lamps) and the sun lens flare. They are immediate-mode quads with
+  world positions in fixed-function mode, which the executor took as
+  already on screen (RECOMP_INLINE_FFP=1, set by the port).
+
 ## [0.1] - 2026-10-11
 
 First Switch/Linux release on the NFS toolkit fork.

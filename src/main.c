@@ -322,6 +322,9 @@ static int game_main(void)
     /* The executor's off-screen batch cull (an NFSU2 speed-up) drops draws
      * Burnout needs: the car thumbnails at car select vanished with it on. */
     setenv("RECOMP_CULL", "0", 0);
+    /* Particles (sparks, boost flames, light glows) are immediate quads with
+     * world positions in fixed-function mode. */
+    setenv("RECOMP_INLINE_FFP", "1", 0);
 #endif
 #if defined(__SWITCH__)
     /* Every periodic log line flushes to the SD card; keep the log to what

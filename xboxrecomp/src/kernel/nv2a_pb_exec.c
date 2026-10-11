@@ -840,9 +840,19 @@ static const VpOut *vp_vertex(uint32_t index)
 /* Is this batch transformed by the fixed-function unit? */
 static int batch_is_ffp(void)
 {
+    /* Inline and immediate vertices are taken as pre-transformed (the NFS
+     * ports' 2D quads). RECOMP_INLINE_FFP=1 transforms them like arrays, as
+     * the hardware does: Burnout 3 sends its particles (sparks, boost
+     * flames, light glows) as immediate quads with world positions in fixed
+     * mode, which otherwise land thousands of pixels off screen. */
+    static int inline_ffp = -1;
+    if (inline_ffp < 0) {
+        const char *e = getenv("RECOMP_INLINE_FFP");
+        inline_ffp = e && *e == '1';
+    }
     return s_gpu.composite_set
         && (s_gpu.xform_mode & 3) != NV_XFORM_MODE_PROGRAM
-        && !s_gpu.inline_active;
+        && (inline_ffp || !s_gpu.inline_active);
 }
 
 /* Attribute 0 as a screen position.

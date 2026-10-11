@@ -140,6 +140,13 @@ needed). This port uses the NFS toolkit fork instead (GPU renderers, Switch).
   (0xF91 UTF-16 entries), replaced by a longer copy with the new texts.
   Saved in b3x_options.txt (sdmc:/switch/b3x/ or the working directory),
   loaded at boot (main.c b3x_options_load).
+- **Particles missing: sparks, boost flames, light glows, sun flare (fixed,
+  toolkit pb_exec):** they are immediate-mode quads (inl 1) with world
+  positions in fixed-function mode. batch_is_ffp() took every inline or
+  immediate batch as pre-transformed (the NFS ports' 2D quads), so they drew
+  at x ~5000. `RECOMP_INLINE_FFP=1` (set in main.c) runs them through the
+  composite matrix like arrays. FRAME_TRACE shows them as `xform 0 ... inl 1`
+  with world-sized v0 when broken.
 - **Race training video (TrD_*.xmv):** not skippable in the game. The
   screen at 0x000151D0 opens it; frames are stepped by sub_00014C80 ->
   sub_001C93D0; movie object at screen+0x1D0, +0x61 = end of file (set when
