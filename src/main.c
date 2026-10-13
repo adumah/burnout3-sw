@@ -325,6 +325,9 @@ static int game_main(void)
     /* Particles (sparks, boost flames, light glows) are immediate quads with
      * world positions in fixed-function mode. */
     setenv("RECOMP_INLINE_FFP", "1", 0);
+    /* Burnout draws 448 lines in the middle of its 480 (black 16 above and
+     * below, hidden by TV overscan on the Xbox): present without them. */
+    setenv("RECOMP_PRESENT_CROP_Y", "16", 0);
 #endif
 #if defined(__SWITCH__)
     /* Every periodic log line flushes to the SD card; keep the log to what

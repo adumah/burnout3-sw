@@ -39,6 +39,8 @@
  *   RECOMP_VK_LOD_BIAS=<b>           mip bias of mipmapped textures
  *                                    (default -0.25: a little sharper)
  *   RECOMP_VK_FXAA=0                 present with a plain blit, no FXAA
+ *   RECOMP_PRESENT_CROP_Y=<n>        leave n logical rows out of the present
+ *                                    at the top and at the bottom
  *   RECOMP_VK_VALIDATION=1           (Linux) enable the Khronos validation layer
  *   RECOMP_VK_HEADLESS=1             (Linux) no window, no present
  */
@@ -3642,6 +3644,7 @@ static const char s_pp_fs[] =
     "#version 450\n"
     "layout(set = 0, binding = 0) uniform sampler2D src;\n"
     "layout(push_constant) uniform P { vec4 rect; vec4 rcp; } pc;\n"
+    "/* rcp.zw: the rows shown, v offset and span (present crop). */\n"
     "layout(location = 0) out vec4 o;\n"
     "float L(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }\n"
     "float Lat(vec2 uv) { return L(textureLod(src, uv, 0.0).rgb); }\n"
@@ -3649,6 +3652,7 @@ static const char s_pp_fs[] =
     "const float Q[8] = float[](1.0, 1.0, 1.0, 1.5, 2.0, 2.0, 4.0, 8.0);\n"
     "void main() {\n"
     "    vec2 uv = (gl_FragCoord.xy - pc.rect.xy) / pc.rect.zw;\n"
+    "    uv.y = pc.rcp.z + uv.y * pc.rcp.w;\n"
     "    vec2 r = pc.rcp.xy;\n"
     "    vec4 cM = textureLod(src, uv, 0.0);\n"
     "    float lM = L(cM.rgb), lD = LO(0, 1), lU = LO(0, -1), lL = LO(-1, 0), lR = LO(1, 0);\n"
@@ -3803,11 +3807,12 @@ static VkPipeline pp_pipe(VkFormat fmt)
     return pipe;
 }
 
-/* Surface s, FXAA'd and scaled into the rectangle (dx, dy, dw, dh) of dst
- * (cleared to black around it), left in layout `final`. Recorded outside
+/* Surface s without its top and bottom cy rows, FXAA'd and scaled into the
+ * rectangle (dx, dy, dw, dh) of dst (cleared to black around it), left in
+ * layout `final`. Recorded outside
  * rendering; 0 = not recorded (use the blit). */
-static int present_fxaa(VkSurf *s, VkImage dst, VkImageView dview, VkFormat fmt, VkExtent2D ext,
-                        int dx, int dy, int dw, int dh, VkImageLayout final,
+static int present_fxaa(VkSurf *s, int cy, VkImage dst, VkImageView dview, VkFormat fmt,
+                        VkExtent2D ext, int dx, int dy, int dw, int dh, VkImageLayout final,
                         VkPipelineStageFlags final_stage)
 {
     VkPipeline pipe = pp_pipe(fmt);
@@ -3856,7 +3861,8 @@ static int present_fxaa(VkSurf *s, VkImage dst, VkImageView dview, VkFormat fmt,
     wr.pImageInfo = &ii;
     p_push_desc(s_cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s_pp_layout, 0, 1, &wr);
     pc[0] = (float)dx; pc[1] = (float)dy; pc[2] = (float)dw; pc[3] = (float)dh;
-    pc[4] = 1.0f / (float)s->pw; pc[5] = 1.0f / (float)s->ph; pc[6] = pc[7] = 0.0f;
+    pc[4] = 1.0f / (float)s->pw; pc[5] = 1.0f / (float)s->ph;
+    pc[6] = (float)cy / (float)s->ph; pc[7] = (float)(s->ph - 2 * cy) / (float)s->ph;
     vkCmdPushConstants(s_cb, s_pp_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, pc);
     vkCmdDraw(s_cb, 3, 1, 0, 0);
     p_end_rendering(s_cb);
@@ -3890,7 +3896,7 @@ static void dump_fxaa(VkSurf *s, const char *path)
     }
     {
         VkExtent2D ext = { t.pw, t.ph };
-        if (present_fxaa(s, t.image, t.view, VK_FORMAT_B8G8R8A8_UNORM, ext, 0, 0,
+        if (present_fxaa(s, 0, t.image, t.view, VK_FORMAT_B8G8R8A8_UNORM, ext, 0, 0,
                          (int)t.pw, (int)t.ph, VK_IMAGE_LAYOUT_GENERAL,
                          VK_PIPELINE_STAGE_ALL_COMMANDS_BIT))
             dump_surface(&t, path);
@@ -4051,13 +4057,20 @@ static void vk_flip(void)
             VkImageMemoryBarrier b = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
             VkImageSubresourceRange rg = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
             VkClearColorValue black = { { 0, 0, 0, 1 } };
-            int dw = 0, dh = 0, dx = 0, dy = 0;
+            int dw = 0, dh = 0, dx = 0, dy = 0, cy = 0;
             have_image = 1;
             if (s && s_drew_any) {
                 /* The logical aspect (16:9 for a widescreen title),
                  * letterboxed. Rows are top-first on both sides. */
                 float lw = (float)s->w / (float)s->aa_sx, lh = (float)s->h / (float)s->aa_sy;
                 float ww = (float)s_sc_extent.width, wh = (float)s_sc_extent.height, scale;
+                /* RECOMP_PRESENT_CROP_Y: rows left out top and bottom (cy in
+                 * the stored pixels). */
+                int crop = nv2a_present_crop_y();
+                if (crop > 0 && lh > 4.0f * (float)crop) {
+                    cy = (int)((float)crop * (float)s->ph / lh + 0.5f);
+                    lh -= 2.0f * (float)crop;
+                }
                 if (xbox_video_widescreen() && lw < lh * 1.5f)
                     lw = lh * 16.0f / 9.0f;
                 scale = ww / lw < wh / lh ? ww / lw : wh / lh;
@@ -4065,7 +4078,7 @@ static void vk_flip(void)
                 dx = ((int)ww - dw) / 2; dy = ((int)wh - dh) / 2;
             }
             if (dw > 0 && dh > 0 && fxaa_on()
-                && present_fxaa(s, dst, s_sc_views[idx], s_sc_format, s_sc_extent, dx, dy, dw, dh,
+                && present_fxaa(s, cy, dst, s_sc_views[idx], s_sc_format, s_sc_extent, dx, dy, dw, dh,
                                 VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                                 VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT))
                 goto presented;
@@ -4089,8 +4102,9 @@ static void vk_flip(void)
                 memset(&bl, 0, sizeof bl);
                 bl.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
                 bl.srcSubresource.layerCount = 1;
+                bl.srcOffsets[0].y = cy;
                 bl.srcOffsets[1].x = (int32_t)s->pw;
-                bl.srcOffsets[1].y = (int32_t)s->ph;
+                bl.srcOffsets[1].y = (int32_t)s->ph - cy;
                 bl.srcOffsets[1].z = 1;
                 bl.dstSubresource = bl.srcSubresource;
                 bl.dstOffsets[0].x = dx;

@@ -2138,6 +2138,13 @@ static void gl_flip(void)
     glClear(GL_COLOR_BUFFER_BIT);
     {
         float lw = (float)s->w / (float)s->aa_sx, lh = (float)s->h / (float)s->aa_sy;
+        /* RECOMP_PRESENT_CROP_Y: rows left out top and bottom (cy in the
+         * stored pixels). */
+        int crop = nv2a_present_crop_y(), cy = 0;
+        if (crop > 0 && lh > 4.0f * (float)crop) {
+            cy = (int)((float)crop * (float)s->ph / lh + 0.5f);
+            lh -= 2.0f * (float)crop;
+        }
         /* A widescreen title renders 640x480 anamorphic: show it at 16:9. */
         if (xbox_video_widescreen() && lw < lh * 1.5f)
             lw = lh * 16.0f / 9.0f;
@@ -2150,7 +2157,7 @@ static void gl_flip(void)
          * sideways. Blits obey the scissor test, so the bars stay cleared. */
         glEnable(GL_SCISSOR_TEST);
         glScissor(dx, dy, dw, dh);
-        glBlitFramebuffer(0, 0, (GLint)s->pw, (GLint)s->ph,
+        glBlitFramebuffer(0, cy, (GLint)s->pw, (GLint)s->ph - cy,
                           dx, dy + dh, dx + dw, dy, GL_COLOR_BUFFER_BIT, GL_LINEAR);
         glDisable(GL_SCISSOR_TEST);
     }

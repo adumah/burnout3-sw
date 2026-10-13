@@ -161,6 +161,11 @@ needed). This port uses the NFS toolkit fork instead (GPU renderers, Switch).
   lines also show the first vertex's diffuse, attribute 3's layout, the
   final combiner, alpha ICW0, factor0 and blend; `RECOMP_GL_TRACE=1` on Vulkan also logs each change
   of render target (pitch/bpp/clip).
+- **Black bars top and bottom (fixed, present crop):** Burnout draws 448
+  lines (rows 16-463) of its 480-line buffers everywhere after the intros,
+  as on PS2; TV overscan hid the rest. main.c sets RECOMP_PRESENT_CROP_Y=16
+  (toolkit: GL and Vulkan present, blit and FXAA) so the picture fills the
+  screen height.
 - "You have accepted an invitation to play" box after Start on every boot:
   not investigated (A dismisses it).
 

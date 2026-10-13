@@ -26,6 +26,7 @@
 #define NV2A_BACKEND_H
 
 #include <stdint.h>
+#include <stdlib.h>
 
 /* The colour surface being drawn into, in real (anti-aliased) pixels.
  * aa_sx/aa_sy give the anti-aliasing factor, so width/aa_sx is the logical
@@ -33,6 +34,22 @@
 /* Nonzero when the title was told the TV is 16:9 (kernel_xbox.c): present
  * the logical surface at 16:9 instead of 4:3. */
 int xbox_video_widescreen(void);
+
+/* RECOMP_PRESENT_CROP_Y=<n>: rows of the logical surface the present leaves
+ * out at the top and at the bottom. Burnout 3 draws a PS2-sized 448 lines
+ * centred in its 640x480 back buffer and relied on TV overscan to hide the
+ * 16 black lines either side; cropped, the picture fills the screen height. */
+static inline int nv2a_present_crop_y(void)
+{
+    static int crop = -1;
+    if (crop < 0) {
+        const char *e = getenv("RECOMP_PRESENT_CROP_Y");
+        crop = 0;
+        while (e && *e >= '0' && *e <= '9')
+            crop = crop * 10 + (*e++ - '0');
+    }
+    return crop;
+}
 
 typedef struct {
     uint32_t color_va;          /* guest address of pixel (0,0) */
